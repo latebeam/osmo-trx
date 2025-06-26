@@ -18,11 +18,13 @@
 #ifndef _LMS_DEVICE_H_
 #define _LMS_DEVICE_H_
 
+#include <map>
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 
 #include "radioDevice.h"
+#include "bandmanager.h"
 #include "smpl_buf.h"
 
 #include <sys/time.h>
@@ -52,10 +54,52 @@ enum lms_dev_type {
 	LMS_DEV_UNKNOWN,
 };
 
-struct dev_band_desc;
+struct dev_band_desc {
+	/* Maximum LimeSuite Tx Gain which can be set/used without distorting
+	   the output * signal, and the resulting real output power measured
+	   when that gain is used.
+	 */
+	double nom_lms_tx_gain;  /* dB */
+	double nom_out_tx_power; /* dBm */
+	/* Factor used to infer base real RSSI offset on the Rx path based on current
+	   configured RxGain. The resulting rssiOffset is added to the per burst
+	   calculated energy in upper layers. These values were empirically
+	   found and may change based on multiple factors, see OS#4468.
+	   Correct measured values only provided for LimeSDR-USB so far.
+	   rssiOffset = rxGain + rxgain2rssioffset_rel;
+	*/
+	double rxgain2rssioffset_rel; /* dB */
+};
+
+/* Device parameter descriptor */
+struct dev_desc {
+	/* Does LimeSuite allow switching the clock source for this device?
+	 * LimeSDR-Mini does not have switches but needs soldering to select
+	 * external/internal clock. Any call to LMS_SetClockFreq() will fail.
+	 */
+	bool clock_src_switchable;
+	/* Does LimeSuite allow using REF_INTERNAL for this device?
+	 * LimeNET-Micro does not like selecting internal clock
+	 */
+	bool clock_src_int_usable;
+	/* Sample rate coef (without having TX/RX samples per symbol into account) */
+	double rate;
+	/* Sample rate coef (without having TX/RX samples per symbol into account), if multi-arfcn is enabled */
+	double rate_multiarfcn;
+	/* Coefficient multiplied by TX sample rate in order to shift Tx time */
+	double ts_offset_coef;
+	/* Coefficient multiplied by TX sample rate in order to shift Tx time, if multi-arfcn is enabled */
+	double ts_offset_coef_multiarfcn;
+	/* Device Name Prefix as presented by LimeSuite API LMS_GetDeviceInfo() */
+	std::string desc_str;
+};
+
+using dev_band_key_t = std::tuple<lms_dev_type, gsm_band>;
+using power_map_t = std::map<dev_band_key_t, dev_band_desc>;
+using dev_map_t = std::map<lms_dev_type, struct dev_desc>;
 
 /** A class to handle a LimeSuite supported device */
-class LMSDevice:public RadioDevice {
+class LMSDevice:public RadioDevice, public band_manager<power_map_t, dev_map_t> {
 
 private:
 	lms_device_t *m_lms_dev;
@@ -72,7 +116,6 @@ private:
 	TIMESTAMP ts_initial, ts_offset;
 
 	std::vector<double> tx_gains, rx_gains;
-	enum gsm_band band;
 
 	enum lms_dev_type m_dev_type;
 
@@ -84,28 +127,25 @@ private:
 	void update_stream_stats_rx(size_t chan, bool *overrun);
 	void update_stream_stats_tx(size_t chan, bool *underrun);
 	bool do_clock_src_freq(enum ReferenceType ref, double freq);
-	void get_dev_band_desc(dev_band_desc& desc);
-
 public:
 
 	/** Object constructor */
-	LMSDevice(size_t tx_sps, size_t rx_sps, InterfaceType iface, size_t chan_num, double lo_offset,
-		  const std::vector<std::string>& tx_paths,
-		  const std::vector<std::string>& rx_paths);
-	~LMSDevice();
+    LMSDevice(InterfaceType iface, const struct trx_cfg *cfg);
+    ~LMSDevice();
 
-	/** Instantiate the LMS */
-	int open(const std::string &args, int ref, bool swap_channels);
+    /** Instantiate the LMS */
+    int open();
 
-	/** Start the LMS */
-	bool start();
+    /** Start the LMS */
+    bool start();
 
-	/** Stop the LMS */
-	bool stop();
+    /** Stop the LMS */
+    bool stop();
 
-	enum TxWindowType getWindowType() {
-		return TX_WINDOW_LMS1;
-	}
+    enum TxWindowType getWindowType()
+    {
+	    return TX_WINDOW_LMS1;
+    }
 
 	/**
 	Read samples from the LMS.
@@ -173,6 +213,7 @@ public:
 	/** return minimum Rx Gain **/
 	double minRxGain(void);
 
+	double rssiOffset(size_t chan);
 
 	double setPowerAttenuation(int atten, size_t chan);
 	double getPowerAttenuation(size_t chan = 0);

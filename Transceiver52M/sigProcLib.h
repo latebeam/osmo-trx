@@ -31,6 +31,7 @@ enum CorrType{
   TSC,         ///< timeslot should contain a normal burst
   EXT_RACH,    ///< timeslot should contain an extended access burst
   RACH,        ///< timeslot should contain an access burst
+  SCH,
   EDGE,        ///< timeslot should contain an EDGE burst
   IDLE         ///< timeslot is an idle (or dummy) burst
 };
@@ -93,6 +94,8 @@ signalVector *generateDummyBurst(int sps, int tn);
 void scaleVector(signalVector &x,
                  complex scale);
 
+signalVector *delayVector(const signalVector *in, signalVector *out, float delay);
+
 /**
         Rough energy estimator.
         @param rxBurst A GSM burst.
@@ -133,8 +136,19 @@ int detectAnyBurst(const signalVector &burst,
                    unsigned max_toa,
                    struct estim_burst_params *ebp);
 
+enum class sch_detect_type {
+	SCH_DETECT_FULL,
+	SCH_DETECT_NARROW,
+	SCH_DETECT_BUFFER,
+};
+
+int detectSCHBurst(signalVector &rxBurst,
+                    float detectThreshold,
+                    int sps,
+                    sch_detect_type state, struct estim_burst_params *ebp);
+
 /** Demodulate burst basde on type and output soft bits */
-SoftVector *demodAnyBurst(const signalVector &burst, int sps,
-                          complex amp, float toa, CorrType type);
+SoftVector *demodAnyBurst(const signalVector &burst, CorrType type,
+                          int sps, struct estim_burst_params *ebp);
 
 #endif /* SIGPROCLIB_H */

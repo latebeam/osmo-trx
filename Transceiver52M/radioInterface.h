@@ -31,16 +31,15 @@ static const unsigned gSlotLen = 148;      ///< number of symbols per slot, not 
 class RadioInterface {
 
 protected:
+  size_t mSPSTx;
+  size_t mSPSRx;
+  size_t mChans;
 
   Thread mAlignRadioServiceLoopThread;	      ///< thread that synchronizes transmit and receive sections
 
   std::vector<VectorFIFO>  mReceiveFIFO;      ///< FIFO that holds receive  bursts
 
   RadioDevice *mDevice;			      ///< the USRP object
-
-  size_t mSPSTx;
-  size_t mSPSRx;
-  size_t mChans;
 
   std::vector<RadioBuffer *> sendBuffer;
   std::vector<RadioBuffer *> recvBuffer;
@@ -76,7 +75,7 @@ private:
 public:
 
   /** start the interface */
-  bool start();
+  virtual bool start();
   bool stop();
 
   /** initialization */
@@ -108,6 +107,9 @@ public:
 
   /** set receive gain */
   virtual double setRxGain(double dB, size_t chan = 0);
+
+  /** return base RSSI offset to apply for received samples **/
+  virtual double rssiOffset(size_t chan = 0);
 
   /** drive transmission of GSM bursts */
   void driveTransmitRadio(std::vector<signalVector *> &bursts,
@@ -149,7 +151,7 @@ private:
 
 public:
   RadioInterfaceResamp(RadioDevice* wDevice, size_t tx_sps, size_t rx_sps);
-  ~RadioInterfaceResamp();
+  virtual ~RadioInterfaceResamp();
 
   bool init(int type);
   void close();
@@ -182,7 +184,7 @@ private:
 public:
   RadioInterfaceMulti(RadioDevice* radio, size_t tx_sps,
                       size_t rx_sps, size_t chans = 1);
-  ~RadioInterfaceMulti();
+  virtual ~RadioInterfaceMulti();
 
   bool init(int type);
   void close();
@@ -190,4 +192,5 @@ public:
   bool tuneTx(double freq, size_t chan);
   bool tuneRx(double freq, size_t chan);
   virtual double setRxGain(double dB, size_t chan);
+  virtual double rssiOffset(size_t chan = 0);
 };

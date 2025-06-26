@@ -34,6 +34,8 @@ AC_CANONICAL_TARGET
 
 AM_INIT_AUTOMAKE([foreign subdir-objects])
 
+CFLAGS="$CFLAGS -std=gnu11"
+
 dnl Linux kernel KBuild style compile messages
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
 
@@ -80,19 +82,10 @@ AC_TYPE_SIZE_T
 AC_HEADER_TIME
 AC_C_BIGENDIAN
 
-# Check if gettid is available (despite not being documented in glibc doc, it requires __USE_GNU on some systems)
-# C compiler is used since __USE_GNU seems to be always defined for g++.
-save_CPPFLAGS=$CPPFLAGS
-AC_LANG_PUSH(C)
-CPPFLAGS="$CPPFLAGS -D_GNU_SOURCE"
-AC_CHECK_FUNCS([gettid])
-AC_LANG_POP(C)
-CPPFLAGS=$save_CPPFLAGS
-
-PKG_CHECK_MODULES(LIBOSMOCORE, libosmocore >= 1.3.0)
-PKG_CHECK_MODULES(LIBOSMOVTY, libosmovty >= 1.3.0)
-PKG_CHECK_MODULES(LIBOSMOCTRL, libosmoctrl >= 1.3.0)
-PKG_CHECK_MODULES(LIBOSMOCODING, libosmocoding >= 1.3.0)
+PKG_CHECK_MODULES(LIBOSMOCORE, libosmocore >= 1.10.0)
+PKG_CHECK_MODULES(LIBOSMOVTY, libosmovty >= 1.10.0)
+PKG_CHECK_MODULES(LIBOSMOCTRL, libosmoctrl >= 1.10.0)
+PKG_CHECK_MODULES(LIBOSMOCODING, libosmocoding >= 1.10.0)
 
 AC_ARG_ENABLE(sanitize,
 	[AS_HELP_STRING(
@@ -138,6 +131,21 @@ AC_ARG_WITH(usrp1, [
 AC_ARG_WITH(lms, [
     AS_HELP_STRING([--with-lms],
         [enable LimeSuite based transceiver])
+])
+
+AC_ARG_WITH(ipc, [
+    AS_HELP_STRING([--with-ipc],
+        [enable IPC])
+])
+
+AC_ARG_WITH(bladerf, [
+    AS_HELP_STRING([--with-bladerf],
+        [enable bladeRF])
+])
+
+AC_ARG_WITH(mstrx, [
+    AS_HELP_STRING([--with-mstrx],
+        [enable MS TRX])
 ])
 
 AC_ARG_WITH(pciesdr, [
@@ -188,7 +196,7 @@ AS_IF([test "x$with_pciesdr" = "xyes"], [
     PKG_CHECK_MODULES(PCIESDR, libsdr)
 ])
 
-AS_IF([test "x$with_uhd" != "xno"],[
+AS_IF([test "x$with_uhd" = "xyes"],[
     PKG_CHECK_MODULES(UHD, uhd >= 003.011,
         [AC_DEFINE(USE_UHD_3_11, 1, UHD version 3.11.0 or higher)],
         [PKG_CHECK_MODULES(UHD, uhd >= 003.009,
@@ -196,6 +204,37 @@ AS_IF([test "x$with_uhd" != "xno"],[
             [PKG_CHECK_MODULES(UHD, uhd >= 003.005)]
         )]
     )
+    # OS#5608: libuhd < 4.2.0 includes boost/thread/thread.hpp in its logging
+    # code and therefore requires linking against boost_thread. It's missing in
+    # uhd.pc, so work around it here.
+    # https://github.com/EttusResearch/uhd/commit/04a83b6e76beef970854da69ba882d717669b49c
+    PKG_CHECK_MODULES(UHD, uhd < 004.002,
+        [LIBS="$LIBS -lboost_thread"],
+        []
+    )
+])
+
+AS_IF([test "x$with_bladerf" = "xyes"], [
+    PKG_CHECK_MODULES(BLADE, libbladeRF >= 2.0)
+])
+
+AC_MSG_CHECKING([whether to enable building MS TRX])
+AS_IF([test "x$with_mstrx" = "xyes"], [
+    AC_CONFIG_SUBDIRS([osmocom-bb/src/host/trxcon])
+    LIBTRXCON_DIR="osmocom-bb/src/host/trxcon"
+    if ! test -d "$srcdir/$LIBTRXCON_DIR"; then
+        AC_MSG_RESULT([no])
+        AC_MSG_ERROR([$LIBTRXCON_DIR does not exist])
+    fi
+    AC_SUBST(LIBTRXCON_DIR)
+    AC_MSG_RESULT([yes])
+], [
+    # Despite LIBTRXCON_DIR is added to SUBDIRS conditionally,
+    # autoconf/automake still requires the directory to be present
+    # and thus the submodule to be fetched (even if MS TRX is not needed).
+    # Work this around by pointing it to an empty dir.
+    AC_SUBST(LIBTRXCON_DIR, "osmocom-bb")
+    AC_MSG_RESULT([no])
 ])
 
 AS_IF([test "x$with_singledb" = "xyes"], [
@@ -210,7 +249,6 @@ AS_IF([test "x$with_sse" != "xno"], [
     AM_CONDITIONAL(HAVE_SSE4_1, false)
 ])
 
-dnl Check if the compiler supports specified GCC's built-in function
 AC_DEFUN([CHECK_BUILTIN_SUPPORT], [
   AC_CACHE_CHECK(
     [whether ${CC} has $1 built-in],
@@ -247,12 +285,15 @@ AS_IF([test "x$osmo_cv_cc_has___sync_fetch_and_and" = "xyes" && test "x$osmo_cv_
     AC_DEFINE(HAVE_ATOMIC_OPS, 1, [Support all required atomic operations], [AC_MSG_WARN("At least one aotmic operation missing, will use mutex")])
 ])
 
-AM_CONDITIONAL(DEVICE_UHD, [test "x$with_uhd" != "xno"])
+AM_CONDITIONAL(DEVICE_UHD, [test "x$with_uhd" = "xyes"])
 AM_CONDITIONAL(DEVICE_USRP1, [test "x$with_usrp1" = "xyes"])
 AM_CONDITIONAL(DEVICE_LMS, [test "x$with_lms" = "xyes"])
+AM_CONDITIONAL(DEVICE_IPC, [test "x$with_ipc" = "xyes"])
+AM_CONDITIONAL(DEVICE_BLADE, [test "x$with_bladerf" = "xyes"])
 AM_CONDITIONAL(DEVICE_PCIESDR, [test "x$with_pciesdr" = "xyes"])
 AM_CONDITIONAL(ARCH_ARM, [test "x$with_neon" = "xyes" || test "x$with_neon_vfpv4" = "xyes"])
 AM_CONDITIONAL(ARCH_ARM_A15, [test "x$with_neon_vfpv4" = "xyes"])
+AM_CONDITIONAL(ENABLE_MS_TRX, [test "x$with_mstrx" = "xyes"])
 
 PKG_CHECK_MODULES(LIBUSB, libusb-1.0)
 PKG_CHECK_MODULES(FFTWF, fftw3f)
@@ -320,6 +361,7 @@ AC_MSG_RESULT([CFLAGS="$CFLAGS"])
 AC_MSG_RESULT([CXXFLAGS="$CXXFLAGS"])
 AC_MSG_RESULT([LDFLAGS="$LDFLAGS"])
 
+
 dnl Output files
 AC_CONFIG_FILES([\
     Makefile \
@@ -335,17 +377,18 @@ AC_CONFIG_FILES([\
     Transceiver52M/device/uhd/Makefile \
     Transceiver52M/device/usrp1/Makefile \
     Transceiver52M/device/lms/Makefile \
+    Transceiver52M/device/ipc/Makefile \
+    Transceiver52M/device/bladerf/Makefile \
     Transceiver52M/device/pciesdr/Makefile \
     tests/Makefile \
     tests/CommonLibs/Makefile \
     tests/Transceiver52M/Makefile \
     utils/Makefile \
+    utils/va-test/Makefile \
     doc/Makefile \
     doc/examples/Makefile \
     contrib/Makefile \
     contrib/systemd/Makefile \
+    doc/manuals/Makefile \
 ])
-
-AC_OUTPUT(
-	doc/manuals/Makefile
-	contrib/osmo-trx.spec)
+AC_OUTPUT

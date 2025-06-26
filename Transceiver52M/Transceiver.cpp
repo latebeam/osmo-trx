@@ -29,6 +29,7 @@
 #include <fstream>
 #include "Transceiver.h"
 #include <Logger.h>
+#include <grgsm_vitac/grgsm_vitac.h>
 
 extern "C" {
 #include "osmo_signal.h"
@@ -37,6 +38,7 @@ extern "C" {
 #include <osmocom/core/utils.h>
 #include <osmocom/core/socket.h>
 #include <osmocom/core/bits.h>
+#include <osmocom/vty/cpu_sched_vty.h>
 }
 
 #ifdef HAVE_CONFIG_H
@@ -61,7 +63,8 @@ static void dispatch_trx_rate_ctr_change(TransceiverState *state, unsigned int c
 }
 
 TransceiverState::TransceiverState()
-  : mFiller(FILLER_ZERO), mRetrans(false), mNoiseLev(0.0), mNoises(NOISE_CNT), mPower(0.0)
+  : mFiller(FILLER_ZERO), mRetrans(false), mNoiseLev(0.0), mNoises(NOISE_CNT),
+    mPower(0.0), mMuted(false), first_dl_fn_rcv()
 {
   for (int i = 0; i < 8; i++) {
     chanType[i] = Transceiver::NONE;
@@ -130,26 +133,22 @@ bool TransceiverState::init(FillerType filler, size_t sps, float scale, size_t r
   return false;
 }
 
-Transceiver::Transceiver(int wBasePort,
-                         const char *TRXAddress,
-                         const char *GSMcoreAddress,
-                         size_t tx_sps, size_t rx_sps, size_t chans,
+Transceiver::Transceiver(const struct trx_cfg *cfg,
                          GSM::Time wTransmitLatency,
-                         RadioInterface *wRadioInterface,
-                         double wRssiOffset, int wStackSize)
-  : mBasePort(wBasePort), mLocalAddr(TRXAddress), mRemoteAddr(GSMcoreAddress),
-    mClockSocket(-1), mTransmitLatency(wTransmitLatency), mRadioInterface(wRadioInterface),
-    rssiOffset(wRssiOffset), stackSize(wStackSize),
-    mSPSTx(tx_sps), mSPSRx(rx_sps), mChans(chans), mExtRACH(false), mEdge(false),
-    mOn(false), mForceClockInterface(false),
-    mTxFreq(0.0), mRxFreq(0.0), mTSC(0), mMaxExpectedDelayAB(0), mMaxExpectedDelayNB(0),
-    mWriteBurstToDiskMask(0)
+                         RadioInterface *wRadioInterface)
+  : mChans(cfg->num_chans), cfg(cfg),
+    mCtrlSockets(mChans), mClockSocket(-1),
+    mTxPriorityQueues(mChans), mReceiveFIFO(mChans),
+    mRxServiceLoopThreads(mChans), mRxLowerLoopThread(nullptr), mTxLowerLoopThread(nullptr),
+    mTxPriorityQueueServiceLoopThreads(mChans), mTransmitLatency(wTransmitLatency), mRadioInterface(wRadioInterface),
+    mOn(false),mForceClockInterface(false), mTxFreq(0.0), mRxFreq(0.0), mTSC(0), mMaxExpectedDelayAB(0),
+    mMaxExpectedDelayNB(0), mWriteBurstToDiskMask(0), mVersionTRXD(mChans), mStates(mChans)
 {
   txFullScale = mRadioInterface->fullScaleInputValue();
   rxFullScale = mRadioInterface->fullScaleOutputValue();
 
-  for (int i = 0; i < 8; i++) {
-    for (int j = 0; j < 8; j++)
+  for (size_t i = 0; i < ARRAY_SIZE(mHandover); i++) {
+    for (size_t j = 0; j < ARRAY_SIZE(mHandover[i]); j++)
       mHandover[i][j] = false;
   }
 }
@@ -197,11 +196,9 @@ int Transceiver::ctrl_sock_cb(struct osmo_fd *bfd, unsigned int flags)
  * are still expected to report clock indications through control channel
  * activity.
  */
-bool Transceiver::init(FillerType filler, size_t rtsc, unsigned rach_delay,
-                       bool edge, bool ext_rach)
+bool Transceiver::init()
 {
   int d_srcport, d_dstport, c_srcport, c_dstport;
-
   if (!mChans) {
     LOG(FATAL) << "No channels assigned";
     return false;
@@ -212,41 +209,34 @@ bool Transceiver::init(FillerType filler, size_t rtsc, unsigned rach_delay,
     return false;
   }
 
-  mExtRACH = ext_rach;
-  mEdge = edge;
+  initvita();
 
   mDataSockets.resize(mChans, -1);
-  mCtrlSockets.resize(mChans);
-  mTxPriorityQueueServiceLoopThreads.resize(mChans);
-  mRxServiceLoopThreads.resize(mChans);
 
-  mTxPriorityQueues.resize(mChans);
-  mReceiveFIFO.resize(mChans);
-  mStates.resize(mChans);
-  mVersionTRXD.resize(mChans);
 
   /* Filler table retransmissions - support only on channel 0 */
-  if (filler == FILLER_DUMMY)
+  if (cfg->filler == FILLER_DUMMY)
     mStates[0].mRetrans = true;
 
   /* Setup sockets */
   mClockSocket = osmo_sock_init2(AF_UNSPEC, SOCK_DGRAM, IPPROTO_UDP,
-				    mLocalAddr.c_str(), mBasePort,
-				    mRemoteAddr.c_str(), mBasePort + 100,
+				    cfg->bind_addr, cfg->base_port,
+				    cfg->remote_addr, cfg->base_port + 100,
 				    OSMO_SOCK_F_BIND | OSMO_SOCK_F_CONNECT);
   if (mClockSocket < 0)
     return false;
 
   for (size_t i = 0; i < mChans; i++) {
     int rv;
-    c_srcport = mBasePort + 2 * i + 1;
-    c_dstport = mBasePort + 2 * i + 101;
-    d_srcport = mBasePort + 2 * i + 2;
-    d_dstport = mBasePort + 2 * i + 102;
+    FillerType filler = cfg->filler;
+    c_srcport = cfg->base_port + 2 * i + 1;
+    c_dstport = cfg->base_port + 2 * i + 101;
+    d_srcport = cfg->base_port + 2 * i + 2;
+    d_dstport = cfg->base_port + 2 * i + 102;
 
     rv = osmo_sock_init2_ofd(&mCtrlSockets[i].conn_bfd, AF_UNSPEC, SOCK_DGRAM, IPPROTO_UDP,
-                                      mLocalAddr.c_str(), c_srcport,
-                                      mRemoteAddr.c_str(), c_dstport,
+                                      cfg->bind_addr, c_srcport,
+                                      cfg->remote_addr, c_dstport,
 				      OSMO_SOCK_F_BIND | OSMO_SOCK_F_CONNECT);
     if (rv < 0)
       return false;
@@ -256,8 +246,8 @@ bool Transceiver::init(FillerType filler, size_t rtsc, unsigned rach_delay,
 
 
     mDataSockets[i] = osmo_sock_init2(AF_UNSPEC, SOCK_DGRAM, IPPROTO_UDP,
-                                      mLocalAddr.c_str(), d_srcport,
-                                      mRemoteAddr.c_str(), d_dstport,
+                                      cfg->bind_addr, d_srcport,
+                                      cfg->remote_addr, d_dstport,
 				      OSMO_SOCK_F_BIND | OSMO_SOCK_F_CONNECT);
     if (mDataSockets[i] < 0)
       return false;
@@ -265,7 +255,7 @@ bool Transceiver::init(FillerType filler, size_t rtsc, unsigned rach_delay,
     if (i && filler == FILLER_DUMMY)
       filler = FILLER_ZERO;
 
-    mStates[i].init(filler, mSPSTx, txFullScale, rtsc, rach_delay);
+    mStates[i].init(filler, cfg->tx_sps, txFullScale, cfg->rtsc, cfg->rach_delay);
   }
 
   /* Randomize the central clock */
@@ -307,8 +297,8 @@ bool Transceiver::start()
   }
 
   /* Device is running - launch I/O threads */
-  mRxLowerLoopThread = new Thread(stackSize);
-  mTxLowerLoopThread = new Thread(stackSize);
+  mRxLowerLoopThread = new Thread(cfg->stack_size);
+  mTxLowerLoopThread = new Thread(cfg->stack_size);
   mTxLowerLoopThread->start((void * (*)(void*))
                             TxLowerLoopAdapter,(void*) this);
   mRxLowerLoopThread->start((void * (*)(void*))
@@ -319,14 +309,14 @@ bool Transceiver::start()
     TrxChanThParams *params = (TrxChanThParams *)malloc(sizeof(struct TrxChanThParams));
     params->trx = this;
     params->num = i;
-    mRxServiceLoopThreads[i] = new Thread(stackSize);
+    mRxServiceLoopThreads[i] = new Thread(cfg->stack_size);
     mRxServiceLoopThreads[i]->start((void * (*)(void*))
                             RxUpperLoopAdapter, (void*) params);
 
     params = (TrxChanThParams *)malloc(sizeof(struct TrxChanThParams));
     params->trx = this;
     params->num = i;
-    mTxPriorityQueueServiceLoopThreads[i] = new Thread(stackSize);
+    mTxPriorityQueueServiceLoopThreads[i] = new Thread(cfg->stack_size);
     mTxPriorityQueueServiceLoopThreads[i]->start((void * (*)(void*))
                             TxUpperLoopAdapter, (void*) params);
   }
@@ -399,11 +389,11 @@ void Transceiver::addRadioVector(size_t chan, BitVector &bits,
 
   /* Use the number of bits as the EDGE burst indicator */
   if (bits.size() == EDGE_BURST_NBITS)
-    burst = modulateEdgeBurst(bits, mSPSTx);
+    burst = modulateEdgeBurst(bits, cfg->tx_sps);
   else
-    burst = modulateBurst(bits, 8 + (wTime.TN() % 4 == 0), mSPSTx);
+    burst = modulateBurst(bits, 8 + (wTime.TN() % 4 == 0), cfg->tx_sps);
 
-  scaleVector(*burst, txFullScale * pow(10, -RSSI / 10));
+  scaleVector(*burst, txFullScale * pow(10, (double) -RSSI / 20));
 
   radio_burst = new radioVector(wTime, burst);
 
@@ -439,7 +429,7 @@ void Transceiver::pushRadioVector(GSM::Time &nowTime)
     state = &mStates[i];
     ratectr_changed = false;
 
-    zeros[i] = state->chanType[TN] == NONE;
+    zeros[i] = state->chanType[TN] == NONE || state->mMuted;
 
     Mutex *mtx = mTxPriorityQueues[i].getMutex();
     mtx->lock();
@@ -564,16 +554,16 @@ CorrType Transceiver::expectedCorrType(GSM::Time currTime,
     break;
   case IV:
   case VI:
-    return mExtRACH ? EXT_RACH : RACH;
+    return cfg->ext_rach ? EXT_RACH : RACH;
     break;
   case V: {
     int mod51 = burstFN % 51;
     if ((mod51 <= 36) && (mod51 >= 14))
-      return mExtRACH ? EXT_RACH : RACH;
+      return cfg->ext_rach ? EXT_RACH : RACH;
     else if ((mod51 == 4) || (mod51 == 5))
-      return mExtRACH ? EXT_RACH : RACH;
+      return cfg->ext_rach ? EXT_RACH : RACH;
     else if ((mod51 == 45) || (mod51 == 46))
-      return mExtRACH ? EXT_RACH : RACH;
+      return cfg->ext_rach ? EXT_RACH : RACH;
     else if (mHandover[burstTN][sdcch4_subslot[burstFN % 102]])
       return RACH;
     else
@@ -591,11 +581,11 @@ CorrType Transceiver::expectedCorrType(GSM::Time currTime,
   case XIII: {
     int mod52 = burstFN % 52;
     if ((mod52 == 12) || (mod52 == 38))
-      return mExtRACH ? EXT_RACH : RACH;
+      return RACH; /* RACH is always 8-bit on PTCCH/U */
     else if ((mod52 == 25) || (mod52 == 51))
       return IDLE;
     else /* Enable 8-PSK burst detection if EDGE is enabled */
-      return mEdge ? EDGE : TSC;
+      return cfg->egprs ? EDGE : TSC;
     break;
   }
   case LOOPBACK:
@@ -620,6 +610,51 @@ void writeToFile(radioVector *radio_burst, size_t chan)
   outfile.close();
 }
 
+double Transceiver::rssiOffset(size_t chan)
+{
+  if (cfg->force_rssi_offset)
+        return cfg->rssi_offset;
+  return mRadioInterface->rssiOffset(chan) + cfg->rssi_offset;
+}
+
+static SoftVector *demodAnyBurst_va(const signalVector &burst, CorrType type, int sps, int rach_max_toa, int tsc)
+{
+	auto conved_beg = reinterpret_cast<const std::complex<float> *>(&burst.begin()[0]);
+	std::complex<float> chan_imp_resp[CHAN_IMP_RESP_LENGTH * d_OSR];
+	float ncmax;
+	const unsigned burst_len_bits = 148 + 8;
+	char demodded_softbits[burst_len_bits];
+	SoftVector *bits = new SoftVector(burst_len_bits);
+
+	if (type == CorrType::TSC) {
+		auto rach_burst_start = get_norm_chan_imp_resp(conved_beg, chan_imp_resp, &ncmax, tsc);
+		rach_burst_start = std::max(rach_burst_start, 0);
+		detect_burst_nb(conved_beg, chan_imp_resp, rach_burst_start, demodded_softbits);
+	} else {
+		auto normal_burst_start = get_access_imp_resp(conved_beg, chan_imp_resp, &ncmax, 0);
+		normal_burst_start = std::max(normal_burst_start, 0);
+		detect_burst_ab(conved_beg, chan_imp_resp, normal_burst_start, demodded_softbits, rach_max_toa);
+	}
+
+	float *s = &bits->begin()[0];
+	for (unsigned int i = 0; i < 148; i++)
+		s[i] = demodded_softbits[i] * -1;
+	for (unsigned int i = 148; i < burst_len_bits; i++)
+		s[i] = 0;
+	return bits;
+}
+
+#define USE_VA
+
+#ifdef USE_VA
+// signalvector is owning despite claiming not to, but we can pretend, too..
+static void dummy_free(void *wData){};
+static void *dummy_alloc(size_t newSize)
+{
+	return 0;
+};
+#endif
+
 /*
  * Pull bursts from the FIFO and handle according to the slot
  * and burst correlation type. Equalzation is currently disabled.
@@ -639,6 +674,10 @@ int Transceiver::pullRadioVector(size_t chan, struct trx_ul_burst_ind *bi)
   SoftVector *rxBurst;
   TransceiverState *state = &mStates[chan];
   bool ctr_changed = false;
+  double rssi_offset;
+  static complex burst_shift_buffer[625];
+  static signalVector shift_vec(burst_shift_buffer, 0, 625, dummy_alloc, dummy_free);
+  signalVector *shvec_ptr = &shift_vec;
 
   /* Blocking FIFO read */
   radioVector *radio_burst = mReceiveFIFO[chan]->read();
@@ -648,7 +687,7 @@ int Transceiver::pullRadioVector(size_t chan, struct trx_ul_burst_ind *bi)
   }
 
   /* Set time and determine correlation type */
-  burstTime = radio_burst->getTime();
+  burstTime = radio_burst->getTime() + cfg->ul_fn_offset;
   CorrType type = expectedCorrType(burstTime, chan);
 
   /* Initialize struct bi */
@@ -677,9 +716,13 @@ int Transceiver::pullRadioVector(size_t chan, struct trx_ul_burst_ind *bi)
     return -ENOENT;
   }
 
+  /* If TRX RF is locked/muted by BTS, send idle burst indications */
+  if (state->mMuted)
+    goto ret_idle;
+
   /* Select the diversity channel with highest energy */
   for (size_t i = 0; i < radio_burst->chans(); i++) {
-    float pow = energyDetect(*radio_burst->getVector(i), 20 * mSPSRx);
+    float pow = energyDetect(*radio_burst->getVector(i), 20 * cfg->rx_sps);
     if (pow > max) {
       max = pow;
       max_i = i;
@@ -704,8 +747,9 @@ int Transceiver::pullRadioVector(size_t chan, struct trx_ul_burst_ind *bi)
     state->mNoiseLev = state->mNoises.avg();
   }
 
-  bi->rssi = 20.0 * log10(rxFullScale / avg) + rssiOffset;
-  bi->noise = 20.0 * log10(rxFullScale / state->mNoiseLev) + rssiOffset;
+  rssi_offset = rssiOffset(chan);
+  bi->rssi = 20.0 * log10(rxFullScale / avg) + rssi_offset;
+  bi->noise = 20.0 * log10(rxFullScale / state->mNoiseLev) + rssi_offset;
 
   if (type == IDLE)
     goto ret_idle;
@@ -713,8 +757,15 @@ int Transceiver::pullRadioVector(size_t chan, struct trx_ul_burst_ind *bi)
   max_toa = (type == RACH || type == EXT_RACH) ?
             mMaxExpectedDelayAB : mMaxExpectedDelayNB;
 
+  if (cfg->use_va) {
+    // shifted burst copy to make the old demod and detection happy
+    std::copy(burst->begin() + 20, burst->end() - 20, shift_vec.begin());
+  } else {
+    shvec_ptr = burst;
+  }
+
   /* Detect normal or RACH bursts */
-  rc = detectAnyBurst(*burst, mTSC, BURST_THRESH, mSPSRx, type, max_toa, &ebp);
+  rc = detectAnyBurst(*shvec_ptr, mTSC, BURST_THRESH, cfg->rx_sps, type, max_toa, &ebp);
   if (rc <= 0) {
     if (rc == -SIGERR_CLIP) {
       LOGCHAN(chan, DTRXDUL, INFO) << "Clipping detected on received RACH or Normal Burst";
@@ -728,11 +779,16 @@ int Transceiver::pullRadioVector(size_t chan, struct trx_ul_burst_ind *bi)
     goto ret_idle;
   }
 
-  type = (CorrType) rc;
+  if (cfg->use_va) {
+    scaleVector(*burst, { (1. / (float)((1 << 14) - 1)), 0 });
+    rxBurst = demodAnyBurst_va(*burst, (CorrType)rc, cfg->rx_sps, max_toa, mTSC);
+  } else {
+    rxBurst = demodAnyBurst(*shvec_ptr, (CorrType)rc, cfg->rx_sps, &ebp);
+  }
+
   bi->toa = ebp.toa;
   bi->tsc = ebp.tsc;
   bi->ci = ebp.ci;
-  rxBurst = demodAnyBurst(*burst, mSPSRx, ebp.amp, ebp.toa, type);
 
   /* EDGE demodulator returns 444 (gSlotLen * 3) bits */
   if (rxBurst->size() == EDGE_BURST_NBITS) {
@@ -800,7 +856,7 @@ void Transceiver::ctrl_sock_send(ctrl_msg& m, int chan)
   struct osmo_fd *conn_bfd = &s.conn_bfd;
 
   s.txmsgqueue.push_back(m);
-  conn_bfd->when |= OSMO_FD_WRITE;
+  osmo_fd_write_enable(conn_bfd);
 }
 
 int Transceiver::ctrl_sock_write(int chan)
@@ -815,7 +871,7 @@ int Transceiver::ctrl_sock_write(int chan)
   while (s.txmsgqueue.size()) {
     const ctrl_msg m = s.txmsgqueue.front();
 
-    s.conn_bfd.when &= ~OSMO_FD_WRITE;
+    osmo_fd_write_disable(&s.conn_bfd);
 
     /* try to send it over the socket */
     rc = write(s.conn_bfd.fd, m.data, strlen(m.data) + 1);
@@ -823,7 +879,7 @@ int Transceiver::ctrl_sock_write(int chan)
       goto close;
     if (rc < 0) {
       if (errno == EAGAIN) {
-        s.conn_bfd.when |= OSMO_FD_WRITE;
+        osmo_fd_write_enable(&s.conn_bfd);
         break;
       }
       goto close;
@@ -903,19 +959,18 @@ int Transceiver::ctrl_sock_handle_rx(int chan)
       sprintf(response, "RSP NOHANDOVER 0 %u %u", ts, ss);
     }
   } else if (match_cmd(command, "SETMAXDLY", &params)) {
-    //set expected maximum time-of-arrival
+    //set expected maximum time-of-arrival for Access Bursts
     int maxDelay;
     sscanf(params, "%d", &maxDelay);
     mMaxExpectedDelayAB = maxDelay; // 1 GSM symbol is approx. 1 km
     sprintf(response,"RSP SETMAXDLY 0 %d",maxDelay);
   } else if (match_cmd(command, "SETMAXDLYNB", &params)) {
-    //set expected maximum time-of-arrival
+    //set expected maximum time-of-arrival for Normal Bursts
     int maxDelay;
     sscanf(params, "%d", &maxDelay);
     mMaxExpectedDelayNB = maxDelay; // 1 GSM symbol is approx. 1 km
     sprintf(response,"RSP SETMAXDLYNB 0 %d",maxDelay);
   } else if (match_cmd(command, "SETRXGAIN", &params)) {
-    //set expected maximum time-of-arrival
     int newGain;
     sscanf(params, "%d", &newGain);
     newGain = mRadioInterface->setRxGain(newGain, chan);
@@ -949,7 +1004,7 @@ int Transceiver::ctrl_sock_handle_rx(int chan)
     // tune receiver
     int freqKhz;
     sscanf(params, "%d", &freqKhz);
-    mRxFreq = freqKhz * 1e3;
+    mRxFreq = (freqKhz + cfg->freq_offset_khz) * 1e3;
     if (!mRadioInterface->tuneRx(mRxFreq, chan)) {
        LOGCHAN(chan, DTRXCTRL, FATAL) << "RX failed to tune";
        sprintf(response,"RSP RXTUNE 1 %d",freqKhz);
@@ -960,7 +1015,7 @@ int Transceiver::ctrl_sock_handle_rx(int chan)
     // tune txmtr
     int freqKhz;
     sscanf(params, "%d", &freqKhz);
-    mTxFreq = freqKhz * 1e3;
+    mTxFreq = (freqKhz + cfg->freq_offset_khz) * 1e3;
     if (!mRadioInterface->tuneTx(mTxFreq, chan)) {
        LOGCHAN(chan, DTRXCTRL, FATAL) << "TX failed to tune";
        sprintf(response,"RSP TXTUNE 1 %d",freqKhz);
@@ -998,13 +1053,19 @@ int Transceiver::ctrl_sock_handle_rx(int chan)
     LOGCHAN(chan, DTRXCTRL, INFO) << "BTS requests TRXD version switch: " << version_recv;
     if (version_recv > TRX_DATA_FORMAT_VER) {
       LOGCHAN(chan, DTRXCTRL, INFO) << "rejecting TRXD version " << version_recv
-                                    << "in favor of " <<  TRX_DATA_FORMAT_VER;
+                                    << " in favor of " <<  TRX_DATA_FORMAT_VER;
       sprintf(response, "RSP SETFORMAT %u %u", TRX_DATA_FORMAT_VER, version_recv);
     } else {
       LOGCHAN(chan, DTRXCTRL, NOTICE) << "switching to TRXD version " << version_recv;
       mVersionTRXD[chan] = version_recv;
       sprintf(response, "RSP SETFORMAT %u %u", version_recv, version_recv);
     }
+  } else if (match_cmd(command, "RFMUTE", &params)) {
+    // (Un)mute RF TX and RX
+    unsigned mute;
+    sscanf(params, "%u", &mute);
+    mStates[chan].mMuted = mute ? true : false;
+    sprintf(response, "RSP RFMUTE 0 %u", mute);
   } else if (match_cmd(command, "_SETBURSTTODISKMASK", &params)) {
     // debug command! may change or disappear without notice
     // set a mask which bursts to dump to disk
@@ -1043,8 +1104,8 @@ bool Transceiver::driveTxPriorityQueue(size_t chan)
       burstLen = gSlotLen;
       break;
     case sizeof(*dl) + EDGE_BURST_NBITS: /* EDGE burst */
-      if (mSPSTx != 4) {
-        LOGCHAN(chan, DTRXDDL, ERROR) << "EDGE burst received but SPS is set to " << mSPSTx;
+      if (cfg->tx_sps != 4) {
+        LOGCHAN(chan, DTRXDDL, ERROR) << "EDGE burst received but SPS is set to " << cfg->tx_sps;
         return false;
       }
       burstLen = EDGE_BURST_NBITS;
@@ -1151,11 +1212,13 @@ void Transceiver::logRxBurst(size_t chan, const struct trx_ul_burst_ind *bi)
     else os << "-";
   }
 
+  double rssi_offset = rssiOffset(chan);
+
   LOGCHAN(chan, DTRXDUL, DEBUG) << std::fixed << std::right
     << " time: "   << unsigned(bi->tn) << ":" << bi->fn
-    << " RSSI: "   << std::setw(5) << std::setprecision(1) << (bi->rssi - rssiOffset)
+    << " RSSI: "   << std::setw(5) << std::setprecision(1) << (bi->rssi - rssi_offset)
                    << "dBFS/" << std::setw(6) << -bi->rssi << "dBm"
-    << " noise: "  << std::setw(5) << std::setprecision(1) << (bi->noise - rssiOffset)
+    << " noise: "  << std::setw(5) << std::setprecision(1) << (bi->noise - rssi_offset)
                    << "dBFS/" << std::setw(6) << -bi->noise << "dBm"
     << " TOA: "    << std::setw(5) << std::setprecision(2) << bi->toa
     << " C/I: "    << std::setw(5) << std::setprecision(2) << bi->ci << "dB"
@@ -1273,6 +1336,7 @@ void *RxUpperLoopAdapter(TrxChanThParams *params)
 
   snprintf(thread_name, 16, "RxUpper%zu", num);
   set_selfthread_name(thread_name);
+  OSMO_ASSERT(osmo_cpu_sched_vty_apply_localthread() == 0);
 
   while (1) {
     if (!trx->driveReceiveFIFO(num)) {
@@ -1288,6 +1352,7 @@ void *RxUpperLoopAdapter(TrxChanThParams *params)
 void *RxLowerLoopAdapter(Transceiver *transceiver)
 {
   set_selfthread_name("RxLower");
+  OSMO_ASSERT(osmo_cpu_sched_vty_apply_localthread() == 0);
 
   while (1) {
     if (!transceiver->driveReceiveRadio()) {
@@ -1303,6 +1368,7 @@ void *RxLowerLoopAdapter(Transceiver *transceiver)
 void *TxLowerLoopAdapter(Transceiver *transceiver)
 {
   set_selfthread_name("TxLower");
+  OSMO_ASSERT(osmo_cpu_sched_vty_apply_localthread() == 0);
 
   while (1) {
     transceiver->driveTxFIFO();
@@ -1321,6 +1387,7 @@ void *TxUpperLoopAdapter(TrxChanThParams *params)
 
   snprintf(thread_name, 16, "TxUpper%zu", num);
   set_selfthread_name(thread_name);
+  OSMO_ASSERT(osmo_cpu_sched_vty_apply_localthread() == 0);
 
   while (1) {
     if (!trx->driveTxPriorityQueue(num)) {

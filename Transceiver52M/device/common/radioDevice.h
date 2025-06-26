@@ -51,13 +51,10 @@ class RadioDevice {
     MULTI_ARFCN,
   };
 
-  static RadioDevice *make(size_t tx_sps, size_t rx_sps, InterfaceType type,
-                           size_t chans = 1, double offset = 0.0,
-                           const std::vector<std::string>& tx_paths = std::vector<std::string>(1, ""),
-                           const std::vector<std::string>& rx_paths = std::vector<std::string>(1, ""));
+  static RadioDevice *make(InterfaceType type, const struct trx_cfg *cfg);
 
   /** Initialize the USRP */
-  virtual int open(const std::string &args, int ref, bool swap_channels)=0;
+  virtual int open() = 0;
 
   virtual ~RadioDevice() { }
 
@@ -125,6 +122,9 @@ class RadioDevice {
   /** return minimum Rx Gain **/
   virtual double minRxGain(void) = 0;
 
+  /** return base RSSI offset to apply for received samples **/
+  virtual double rssiOffset(size_t chan) = 0;
+
   /** returns the Nominal transmit output power of the transceiver in dBm, negative on error **/
   virtual int getNominalTxPower(size_t chan = 0) = 0;
 
@@ -161,24 +161,30 @@ class RadioDevice {
   double lo_offset;
   std::vector<std::string> tx_paths, rx_paths;
   std::vector<struct device_counters> m_ctr;
+  const struct trx_cfg *cfg;
 
-  RadioDevice(size_t tx_sps, size_t rx_sps, InterfaceType type, size_t chan_num, double offset,
-              const std::vector<std::string>& tx_paths,
-              const std::vector<std::string>& rx_paths):
-		tx_sps(tx_sps), rx_sps(rx_sps), iface(type), chans(chan_num), lo_offset(offset),
-		tx_paths(tx_paths), rx_paths(rx_paths)
-	{
-		if (iface == MULTI_ARFCN) {
-			LOGC(DDEV, INFO) << "Multi-ARFCN: "<< chan_num << " logical chans -> 1 physical chans";
-			chans = 1;
-		}
+#define charp2str(a) ((a) ? std::string(a) : std::string(""))
 
-		m_ctr.resize(chans);
-		for (size_t i = 0; i < chans; i++) {
-			memset(&m_ctr[i], 0, sizeof(m_ctr[i]));
-			m_ctr[i].chan = i;
-		}
-	}
+  RadioDevice(InterfaceType type, const struct trx_cfg *cfg)
+	  : tx_sps(cfg->tx_sps), rx_sps(cfg->rx_sps), iface(type), chans(cfg->num_chans), lo_offset(cfg->offset),
+	    m_ctr(chans), cfg(cfg)
+  {
+	  /* Generate vector of rx/tx_path: */
+	  for (unsigned int i = 0; i < cfg->num_chans; i++) {
+		  rx_paths.push_back(charp2str(cfg->chans[i].rx_path));
+		  tx_paths.push_back(charp2str(cfg->chans[i].tx_path));
+	  }
+
+	  if (iface == MULTI_ARFCN) {
+		  LOGC(DDEV, INFO) << "Multi-ARFCN: " << chans << " logical chans -> 1 physical chans";
+		  chans = 1;
+	  }
+
+	  for (size_t i = 0; i < chans; i++) {
+		  memset(&m_ctr[i], 0, sizeof(m_ctr[i]));
+		  m_ctr[i].chan = i;
+	  }
+  }
 
   bool set_antennas() {
 	unsigned int i;
@@ -186,6 +192,13 @@ class RadioDevice {
 	for (i = 0; i < tx_paths.size(); i++) {
 		if (tx_paths[i] == "")
 			continue;
+		if (iface == MULTI_ARFCN && i > 0) {
+			LOGCHAN(i, DDEV, NOTICE) << "Not setting Tx antenna "
+						 << tx_paths[i]
+						 << " for a logical channel";
+			continue;
+		}
+
 		LOGCHAN(i, DDEV, DEBUG) << "Configuring Tx antenna " << tx_paths[i];
 		if (!setTxAntenna(tx_paths[i], i)) {
 			LOGCHAN(i, DDEV, ALERT) << "Failed configuring Tx antenna " << tx_paths[i];
@@ -196,6 +209,13 @@ class RadioDevice {
 	for (i = 0; i < rx_paths.size(); i++) {
 		if (rx_paths[i] == "")
 			continue;
+		if (iface == MULTI_ARFCN && i > 0) {
+			LOGCHAN(i, DDEV, NOTICE) << "Not setting Rx antenna "
+						 << rx_paths[i]
+						 << " for a logical channel";
+			continue;
+		}
+
 		LOGCHAN(i, DDEV, DEBUG) << "Configuring Rx antenna " << rx_paths[i];
 		if (!setRxAntenna(rx_paths[i], i)) {
 			LOGCHAN(i, DDEV, ALERT) << "Failed configuring Rx antenna " << rx_paths[i];

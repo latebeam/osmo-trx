@@ -1,0 +1,23 @@
+[Unit]
+Description=Osmocom SDR BTS L1 Transceiver (IPC Backend)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+StateDirectory=osmocom
+WorkingDirectory=%S/osmocom
+User=osmocom
+Group=osmocom
+ExecStart=/usr/bin/osmo-trx-ipc -C /etc/osmocom/osmo-trx-ipc.cfg
+RestartSec=2
+AmbientCapabilities=CAP_SYS_NICE
+# CPU scheduling policy:
+CPUSchedulingPolicy=rr
+# For real-time scheduling policies an integer between 1 (lowest priority) and 99 (highest priority):
+CPUSchedulingPriority=21
+# See sched(7) for further details on real-time policies and priorities
+
+[Install]
+WantedBy=multi-user.target

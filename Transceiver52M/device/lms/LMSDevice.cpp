@@ -23,7 +23,6 @@
 
 #include <map>
 
-#include "trx_vty.h"
 #include "Logger.h"
 #include "Threads.h"
 #include "LMSDevice.h"
@@ -32,6 +31,7 @@
 #include <lime/LimeSuite.h>
 
 extern "C" {
+#include "trx_vty.h"
 #include "osmo_signal.h"
 #include <osmocom/core/utils.h>
 }
@@ -39,8 +39,6 @@ extern "C" {
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
-
-using namespace std;
 
 #define MAX_ANTENNA_LIST_SIZE 10
 #define GSM_CARRIER_BW 270000.0 /* 270kHz */
@@ -54,58 +52,28 @@ using namespace std;
 #define LMS_DEV_SDR_MINI_PREFIX_NAME "LimeSDR-Mini"
 #define LMS_DEV_NET_MICRO_PREFIX_NAME "LimeNET-Micro"
 
-/* Device parameter descriptor */
-struct dev_desc {
-	/* Does LimeSuite allow switching the clock source for this device?
-	 * LimeSDR-Mini does not have switches but needs soldering to select
-	 * external/internal clock. Any call to LMS_SetClockFreq() will fail.
-	 */
-	bool clock_src_switchable;
-	/* Does LimeSuite allow using REF_INTERNAL for this device?
-	 * LimeNET-Micro does not like selecting internal clock
-	 */
-	bool clock_src_int_usable;
-	/* Sample rate coef (without having TX/RX samples per symbol into account) */
-	double rate;
-	/* Sample rate coef (without having TX/RX samples per symbol into account), if multi-arfcn is enabled */
-	double rate_multiarfcn;
-	/* Coefficient multiplied by TX sample rate in order to shift Tx time */
-	double ts_offset_coef;
-	/* Coefficient multiplied by TX sample rate in order to shift Tx time, if multi-arfcn is enabled */
-	double ts_offset_coef_multiarfcn;
-	/* Device Name Prefix as presented by LimeSuite API LMS_GetDeviceInfo() */
-	std::string name_prefix;
-};
 
-static const std::map<enum lms_dev_type, struct dev_desc> dev_param_map {
+
+static const dev_map_t dev_param_map {
 	{ LMS_DEV_SDR_USB,   { true,  true,  GSMRATE, MCBTS_SPACING, 8.9e-5, 7.9e-5, LMS_DEV_SDR_USB_PREFIX_NAME } },
 	{ LMS_DEV_SDR_MINI,  { false, true,  GSMRATE, MCBTS_SPACING, 8.9e-5, 8.2e-5, LMS_DEV_SDR_MINI_PREFIX_NAME } },
 	{ LMS_DEV_NET_MICRO, { true,  false, GSMRATE, MCBTS_SPACING, 8.9e-5, 7.9e-5, LMS_DEV_NET_MICRO_PREFIX_NAME } },
 	{ LMS_DEV_UNKNOWN,   { true,  true,  GSMRATE, MCBTS_SPACING, 8.9e-5, 7.9e-5, "UNKNOWN" } },
 };
 
-typedef std::tuple<lms_dev_type, enum gsm_band> dev_band_key;
-/* Maximum LimeSuite Tx Gain which can be set/used without distorting the output
- * signal, and the resulting real output power measured when that gain is used.
- */
-struct dev_band_desc {
-	double nom_lms_tx_gain;  /* dB */
-	double nom_out_tx_power; /* dBm */
-};
-typedef std::map<dev_band_key, dev_band_desc>::const_iterator dev_band_map_it;
-static const std::map<dev_band_key, dev_band_desc> dev_band_nom_power_param_map {
-	{ std::make_tuple(LMS_DEV_SDR_USB, GSM_BAND_850),	{ 73.0, 11.2 } },
-	{ std::make_tuple(LMS_DEV_SDR_USB, GSM_BAND_900),	{ 73.0, 10.8 } },
-	{ std::make_tuple(LMS_DEV_SDR_USB, GSM_BAND_1800),	{ 65.0, -3.5 } }, /* FIXME: OS#4583: 1800Mhz is failing above TxGain=65, which is around -3.5dBm (already < 0 dBm) */
-	{ std::make_tuple(LMS_DEV_SDR_USB, GSM_BAND_1900),	{ 73.0, 1.7 } }, /* FIXME: OS#4583: 1900MHz is failing in all TxGain values */
-	{ std::make_tuple(LMS_DEV_SDR_MINI, GSM_BAND_850),	{ 66.0, 3.1 } }, /* FIXME: OS#4583: Ensure BAND2 is used at startup */
-	{ std::make_tuple(LMS_DEV_SDR_MINI, GSM_BAND_900),	{ 66.0, 2.8 } }, /* FIXME: OS#4583: Ensure BAND2 is used at startup */
-	{ std::make_tuple(LMS_DEV_SDR_MINI, GSM_BAND_1800),	{ 66.0, -11.6 } }, /* OS#4583: Any of BAND1 or BAND2 is fine */
-	{ std::make_tuple(LMS_DEV_SDR_MINI, GSM_BAND_1900),	{ 66.0, -9.2 } }, /* FIXME: OS#4583: Ensure BAND1 is used at startup */
-	{ std::make_tuple(LMS_DEV_NET_MICRO, GSM_BAND_850),	{ 71.0, 6.8 } },
-	{ std::make_tuple(LMS_DEV_NET_MICRO, GSM_BAND_900),	{ 71.0, 6.8 } },
-	{ std::make_tuple(LMS_DEV_NET_MICRO, GSM_BAND_1800),	{ 65.0, -10.5 } }, /* OS#4583: TxGain=71 (-4.4dBm) FAIL rms phase errors ~10° */
-	{ std::make_tuple(LMS_DEV_NET_MICRO, GSM_BAND_1900),	{ 71.0, -6.3 } }, /* FIXME: OS#4583: all FAIL, BAND1/BAND2 rms phase errors >23° */
+static const power_map_t dev_band_nom_power_param_map {
+	{ std::make_tuple(LMS_DEV_SDR_USB, GSM_BAND_850),	{ 73.0, 11.2,  -6.0  } },
+	{ std::make_tuple(LMS_DEV_SDR_USB, GSM_BAND_900),	{ 73.0, 10.8,  -6.0  } },
+	{ std::make_tuple(LMS_DEV_SDR_USB, GSM_BAND_1800),	{ 65.0, -3.5,  -17.0 } }, /* FIXME: OS#4583: 1800Mhz is failing above TxGain=65, which is around -3.5dBm (already < 0 dBm) */
+	{ std::make_tuple(LMS_DEV_SDR_USB, GSM_BAND_1900),	{ 73.0, 1.7,   -17.0 } }, /* FIXME: OS#4583: 1900MHz is failing in all TxGain values */
+	{ std::make_tuple(LMS_DEV_SDR_MINI, GSM_BAND_850),	{ 66.0, 3.1,   -6.0  } }, /* FIXME: OS#4583: Ensure BAND2 is used at startup */
+	{ std::make_tuple(LMS_DEV_SDR_MINI, GSM_BAND_900),	{ 66.0, 2.8,   -6.0  } }, /* FIXME: OS#4583: Ensure BAND2 is used at startup */
+	{ std::make_tuple(LMS_DEV_SDR_MINI, GSM_BAND_1800),	{ 66.0, -11.6, -17.0 } }, /* OS#4583: Any of BAND1 or BAND2 is fine */
+	{ std::make_tuple(LMS_DEV_SDR_MINI, GSM_BAND_1900),	{ 66.0, -9.2,  -17.0 } }, /* FIXME: OS#4583: Ensure BAND1 is used at startup */
+	{ std::make_tuple(LMS_DEV_NET_MICRO, GSM_BAND_850),	{ 71.0, 6.8,   -6.0  } },
+	{ std::make_tuple(LMS_DEV_NET_MICRO, GSM_BAND_900),	{ 71.0, 6.8,   -6.0  } },
+	{ std::make_tuple(LMS_DEV_NET_MICRO, GSM_BAND_1800),	{ 65.0, -10.5, -17.0 } }, /* OS#4583: TxGain=71 (-4.4dBm) FAIL rms phase errors ~10° */
+	{ std::make_tuple(LMS_DEV_NET_MICRO, GSM_BAND_1900),	{ 71.0, -6.3,  -17.0 } }, /* FIXME: OS#4583: all FAIL, BAND1/BAND2 rms phase errors >23° */
 };
 
 /* So far measurements done for B210 show really close to linear relationship
@@ -131,8 +99,8 @@ static enum lms_dev_type parse_dev_type(lms_device_t *m_lms_dev)
 		enum lms_dev_type dev_type = it->first;
 		struct dev_desc desc = it->second;
 
-		if (strncmp(device_info->deviceName, desc.name_prefix.c_str(), desc.name_prefix.length()) == 0) {
-			LOGC(DDEV, INFO) << "Device identified as " << desc.name_prefix;
+		if (strncmp(device_info->deviceName, desc.desc_str.c_str(), desc.desc_str.length()) == 0) {
+			LOGC(DDEV, INFO) << "Device identified as " << desc.desc_str;
 			return dev_type;
 		}
 		it++;
@@ -140,11 +108,10 @@ static enum lms_dev_type parse_dev_type(lms_device_t *m_lms_dev)
 	return LMS_DEV_UNKNOWN;
 }
 
-LMSDevice::LMSDevice(size_t tx_sps, size_t rx_sps, InterfaceType iface, size_t chan_num, double lo_offset,
-		     const std::vector<std::string>& tx_paths,
-		     const std::vector<std::string>& rx_paths):
-	RadioDevice(tx_sps, rx_sps, iface, chan_num, lo_offset, tx_paths, rx_paths),
-	m_lms_dev(NULL), started(false), band((enum gsm_band)0), m_dev_type(LMS_DEV_UNKNOWN)
+LMSDevice::LMSDevice(InterfaceType iface, const struct trx_cfg *cfg)
+	: RadioDevice(iface, cfg),
+	  band_manager(m_dev_type, dev_band_nom_power_param_map, dev_param_map, {LMS_DEV_SDR_USB, GSM_BAND_850}), m_lms_dev(NULL),
+	  started(false), m_dev_type(LMS_DEV_UNKNOWN)
 {
 	LOGC(DDEV, INFO) << "creating LMS device...";
 
@@ -210,7 +177,7 @@ static void print_range(const char* name, lms_range_t *range)
 int info_list_find(lms_info_str_t* info_list, unsigned int count, const std::string &args)
 {
 	unsigned int i, j;
-	std::vector<string> filters;
+	std::vector<std::string> filters;
 
 	filters = comma_delimited_to_vector(args.c_str());
 
@@ -231,28 +198,7 @@ int info_list_find(lms_info_str_t* info_list, unsigned int count, const std::str
 	return -1;
 }
 
-void LMSDevice::get_dev_band_desc(dev_band_desc& desc)
-{
-	dev_band_map_it it;
-	enum gsm_band req_band = band;
-
-	if (req_band == 0) {
-		LOGC(DDEV, ERROR) << "Nominal Tx Power requested before Tx Frequency was set! Providing band 900 by default... ";
-		req_band = GSM_BAND_900;
-	}
-	it = dev_band_nom_power_param_map.find(dev_band_key(m_dev_type, req_band));
-	if (it == dev_band_nom_power_param_map.end()) {
-		dev_desc desc = dev_param_map.at(m_dev_type);
-		LOGC(DDEV, ERROR) << "No Tx Power measurements exist for device "
-				    << desc.name_prefix << " on band " << gsm_band_name(req_band)
-				    << ", using LimeSDR-USB ones as fallback";
-		it = dev_band_nom_power_param_map.find(dev_band_key(LMS_DEV_SDR_USB, req_band));
-	}
-	OSMO_ASSERT(it != dev_band_nom_power_param_map.end())
-	desc = it->second;
-}
-
-int LMSDevice::open(const std::string &args, int ref, bool swap_channels)
+int LMSDevice::open()
 {
 	lms_info_str_t* info_list;
 	lms_range_t range_sr;
@@ -265,11 +211,12 @@ int LMSDevice::open(const std::string &args, int ref, bool swap_channels)
 
 	LMS_RegisterLogHandler(&lms_log_callback);
 
-	if ((n = LMS_GetDeviceList(NULL)) < 0)
+	if ((rc = LMS_GetDeviceList(NULL)) < 0)
 		LOGC(DDEV, ERROR) << "LMS_GetDeviceList(NULL) failed";
-	LOGC(DDEV, INFO) << "Devices found: " << n;
-	if (n < 1)
+	LOGC(DDEV, INFO) << "Devices found: " << rc;
+	if (rc < 1)
 	    return -1;
+	n = rc;
 
 	info_list = new lms_info_str_t[n];
 
@@ -279,9 +226,9 @@ int LMSDevice::open(const std::string &args, int ref, bool swap_channels)
 	for (i = 0; i < n; i++)
 		LOGC(DDEV, INFO) << "Device [" << i << "]: " << info_list[i];
 
-	dev_id = info_list_find(info_list, n, args);
+	dev_id = info_list_find(info_list, n, cfg->dev_args);
 	if (dev_id == -1) {
-		LOGC(DDEV, ERROR) << "No LMS device found with address '" << args << "'";
+		LOGC(DDEV, ERROR) << "No LMS device found with address '" << cfg->dev_args << "'";
 		delete[] info_list;
 		return -1;
 	}
@@ -298,14 +245,15 @@ int LMSDevice::open(const std::string &args, int ref, bool swap_channels)
 
 	m_dev_type = parse_dev_type(m_lms_dev);
 	dev_desc = dev_param_map.at(m_dev_type);
+	update_band_dev(m_dev_type);
 
-	if ((ref != REF_EXTERNAL) && (ref != REF_INTERNAL)){
+	if ((cfg->clock_ref != REF_EXTERNAL) && (cfg->clock_ref != REF_INTERNAL)) {
 		LOGC(DDEV, ERROR) << "Invalid reference type";
 		goto out_close;
 	}
 
 	/* if reference clock is external, setup must happen _before_ calling LMS_Init */
-	if (ref == REF_EXTERNAL) {
+	if (cfg->clock_ref == REF_EXTERNAL) {
 		LOGC(DDEV, INFO) << "Setting External clock reference to 10MHz";
 		/* FIXME: Assume an external 10 MHz reference clock. make
 		   external reference frequency configurable */
@@ -320,7 +268,7 @@ int LMSDevice::open(const std::string &args, int ref, bool swap_channels)
 	}
 
 	/* if reference clock is internal, setup must happen _after_ calling LMS_Init */
-	if (ref == REF_INTERNAL) {
+	if (cfg->clock_ref == REF_INTERNAL) {
 		LOGC(DDEV, INFO) << "Setting Internal clock reference";
 		/* Internal freq param is not used */
 		if (!do_clock_src_freq(REF_INTERNAL, 0))
@@ -456,6 +404,8 @@ bool LMSDevice::stop()
 		LMS_DestroyStream(m_lms_dev, &m_lms_stream_rx[i]);
 	}
 
+	band_reset();
+
 	started = false;
 	return true;
 }
@@ -471,8 +421,8 @@ bool LMSDevice::do_clock_src_freq(enum ReferenceType ref, double freq)
 		break;
 	case REF_INTERNAL:
 		if (!dev_desc.clock_src_int_usable) {
-			LOGC(DDEV, ERROR) << "Device type " << dev_desc.name_prefix
-					  << " doesn't support internal reference clock";
+			LOGC(DDEV, ERROR)
+				<< "Device type " << dev_desc.desc_str << " doesn't support internal reference clock";
 			return false;
 		}
 		/* According to lms using LMS_CLOCK_EXTREF with a
@@ -490,8 +440,8 @@ bool LMSDevice::do_clock_src_freq(enum ReferenceType ref, double freq)
 		if (LMS_SetClockFreq(m_lms_dev, lms_clk_id, freq) < 0)
 			return false;
 	} else {
-		LOGC(DDEV, INFO) << "Device type " << dev_desc.name_prefix
-				 << " doesn't support switching clock source through SW";
+		LOGC(DDEV, INFO)
+			<< "Device type " << dev_desc.desc_str << " doesn't support switching clock source through SW";
 	}
 
 	return true;
@@ -559,6 +509,21 @@ double LMSDevice::setRxGain(double dB, size_t chan)
 	else
 		rx_gains[chan] = dB;
 	return rx_gains[chan];
+}
+
+double LMSDevice::rssiOffset(size_t chan)
+{
+	double rssiOffset;
+	dev_band_desc desc;
+
+	if (chan >= rx_gains.size()) {
+		LOGC(DDEV, ALERT) << "Requested non-existent channel " << chan;
+		return 0.0f;
+	}
+
+	get_dev_band_desc(desc);
+	rssiOffset = rx_gains[chan] + desc.rxgain2rssioffset_rel;
+	return rssiOffset;
 }
 
 double LMSDevice::setPowerAttenuation(int atten, size_t chan)
@@ -969,9 +934,6 @@ bool LMSDevice::updateAlignment(TIMESTAMP timestamp)
 
 bool LMSDevice::setTxFreq(double wFreq, size_t chan)
 {
-	uint16_t req_arfcn;
-	enum gsm_band req_band;
-
 	if (chan >= chans) {
 		LOGC(DDEV, ALERT) << "Requested non-existent channel " << chan;
 		return false;
@@ -979,35 +941,23 @@ bool LMSDevice::setTxFreq(double wFreq, size_t chan)
 
 	LOGCHAN(chan, DDEV, NOTICE) << "Setting Tx Freq to " << wFreq << " Hz";
 
-	req_arfcn = gsm_freq102arfcn(wFreq / 1000 / 100 , 0);
-	if (req_arfcn == 0xffff) {
-		LOGCHAN(chan, DDEV, ALERT) << "Unknown ARFCN for Tx Frequency " << wFreq / 1000 << " kHz";
+	if (!update_band_from_freq(wFreq, chan, true))
 		return false;
-	}
-	if (gsm_arfcn2band_rc(req_arfcn, &req_band) < 0) {
-		LOGCHAN(chan, DDEV, ALERT) << "Unknown GSM band for Tx Frequency " << wFreq
-					   << " Hz (ARFCN " << req_arfcn << " )";
-		return false;
-	}
-
-	if (band != 0 && req_band != band) {
-		LOGCHAN(chan, DDEV, ALERT) << "Requesting Tx Frequency " << wFreq
-					   << " Hz different from previous band " << gsm_band_name(band);
-		return false;
-	}
 
 	if (LMS_SetLOFrequency(m_lms_dev, LMS_CH_TX, chan, wFreq) < 0) {
 		LOGCHAN(chan, DDEV, ERROR) << "Error setting Tx Freq to " << wFreq << " Hz";
 		return false;
 	}
 
-	band = req_band;
 	return true;
 }
 
 bool LMSDevice::setRxFreq(double wFreq, size_t chan)
 {
 	LOGCHAN(chan, DDEV, NOTICE) << "Setting Rx Freq to " << wFreq << " Hz";
+
+	if (!update_band_from_freq(wFreq, chan, false))
+		return false;
 
 	if (LMS_SetLOFrequency(m_lms_dev, LMS_CH_RX, chan, wFreq) < 0) {
 		LOGCHAN(chan, DDEV, ERROR) << "Error setting Rx Freq to " << wFreq << " Hz";
@@ -1017,18 +967,15 @@ bool LMSDevice::setRxFreq(double wFreq, size_t chan)
 	return true;
 }
 
-RadioDevice *RadioDevice::make(size_t tx_sps, size_t rx_sps,
-			       InterfaceType iface, size_t chans, double lo_offset,
-			       const std::vector < std::string > &tx_paths,
-			       const std::vector < std::string > &rx_paths)
+RadioDevice *RadioDevice::make(InterfaceType type, const struct trx_cfg *cfg)
 {
-	if (tx_sps != rx_sps) {
-		LOGC(DDEV, ERROR) << "LMS Requires tx_sps == rx_sps";
+	if (cfg->tx_sps != cfg->rx_sps) {
+		LOGC(DDEV, ERROR) << "LMS requires tx_sps == rx_sps";
 		return NULL;
 	}
-	if (lo_offset != 0.0) {
+	if (cfg->offset != 0.0) {
 		LOGC(DDEV, ERROR) << "LMS doesn't support lo_offset";
 		return NULL;
 	}
-	return new LMSDevice(tx_sps, rx_sps, iface, chans, lo_offset, tx_paths, rx_paths);
+	return new LMSDevice(type, cfg);
 }

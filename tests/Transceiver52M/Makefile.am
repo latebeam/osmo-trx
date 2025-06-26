@@ -1,10 +1,17 @@
 include $(top_srcdir)/Makefile.common
 
-AM_CFLAGS = -Wall -I$(top_srcdir)/Transceiver52M -I$(top_srcdir)/Transceiver52M/arch/common $(STD_DEFINES_AND_INCLUDES) -g
+AM_CPPFLAGS = \
+	-I$(top_srcdir)/Transceiver52M \
+	-I$(top_srcdir)/Transceiver52M/arch/common \
+	$(STD_DEFINES_AND_INCLUDES) \
+	$(NULL)
+
+AM_CFLAGS = -Wall -g
+AM_LDFLAGS = -no-install
 
 EXTRA_DIST = convolve_test.ok convolve_test_golden.h
 
-noinst_PROGRAMS = \
+check_PROGRAMS = \
 	convolve_test
 
 convolve_test_SOURCES = convolve_test.c
@@ -18,12 +25,13 @@ convolve_test_CFLAGS += $(SIMD_FLAGS)
 endif
 
 if DEVICE_LMS
-noinst_PROGRAMS += LMSDeviceTest
+check_PROGRAMS += LMSDeviceTest
 LMSDeviceTest_SOURCES = LMSDeviceTest.cpp
-LMSDeviceTest_LDFLAGS = $(LIBOSMOCORE_LIBS) $(LMS_LIBS)
 LMSDeviceTest_LDADD = \
 	$(top_builddir)/Transceiver52M/device/lms/libdevice.la \
+	$(LIBOSMOCORE_LIBS) \
 	$(COMMON_LA) \
-	$(LMS_LIBS)
-LMSDeviceTest_CPPFLAGS = $(AM_CPPFLAGS) $(LMS_CFLAGS)
+	$(LMS_LIBS) \
+	$(NULL)
+LMSDeviceTest_CXXFLAGS = $(AM_CFLAGS) $(LMS_CFLAGS)
 endif

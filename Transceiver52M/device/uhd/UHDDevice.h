@@ -30,6 +30,7 @@
 #include "config.h"
 #endif
 
+#include "bandmanager.h"
 #include "radioDevice.h"
 #include "smpl_buf.h"
 
@@ -56,7 +57,33 @@ enum uhd_dev_type {
 	LIMESDR,
 };
 
-struct dev_band_desc;
+struct dev_band_desc {
+	/* Maximum UHD Tx Gain which can be set/used without distorting the
+	   output signal, and the resulting real output power measured when that
+	   gain is used. Correct measured values only provided for B210 so far. */
+	double nom_uhd_tx_gain;  /* dB */
+	double nom_out_tx_power; /* dBm */
+	/* Factor used to infer base real RSSI offset on the Rx path based on current
+	   configured RxGain. The resulting rssiOffset is added to the per burst
+	   calculated energy in upper layers. These values were empirically
+	   found and may change based on multiple factors, see OS#4468.
+	   rssiOffset = rxGain + rxgain2rssioffset_rel;
+	*/
+	double rxgain2rssioffset_rel; /* dB */
+};
+
+struct dev_desc {
+	unsigned channels;
+	double mcr;
+	double rate;
+	double offset;
+	std::string desc_str;
+};
+
+using dev_key = std::tuple<uhd_dev_type, int, int>;
+using dev_band_key = std::tuple<uhd_dev_type, enum gsm_band>;
+using power_map_t = std::map<dev_band_key, dev_band_desc>;
+using dev_map_t = std::map<dev_key, dev_desc>;
 
 /*
     uhd_device - UHD implementation of the Device interface. Timestamped samples
@@ -65,19 +92,19 @@ struct dev_band_desc;
                 Events and errors such as underruns are reported asynchronously
                 by the device and received in a separate thread.
 */
-class uhd_device : public RadioDevice {
+class uhd_device : public RadioDevice, public band_manager<power_map_t, dev_map_t> {
 public:
-	uhd_device(size_t tx_sps, size_t rx_sps, InterfaceType type,
-		   size_t chan_num, double offset,
-		   const std::vector<std::string>& tx_paths,
-		   const std::vector<std::string>& rx_paths);
-	~uhd_device();
+    uhd_device(InterfaceType iface, const struct trx_cfg *cfg);
+    ~uhd_device();
 
-	int open(const std::string &args, int ref, bool swap_channels);
-	bool start();
-	bool stop();
-	bool restart();
-	enum TxWindowType getWindowType() { return tx_window; }
+    int open();
+    bool start();
+    bool stop();
+    bool restart();
+    enum TxWindowType getWindowType()
+    {
+	    return tx_window;
+    }
 
 	int readSamples(std::vector<short *> &bufs, int len, bool *overrun,
 			TIMESTAMP timestamp, bool *underrun);
@@ -100,6 +127,7 @@ public:
 	double getRxGain(size_t chan);
 	double maxRxGain(void) { return rx_gain_max; }
 	double minRxGain(void) { return rx_gain_min; }
+	double rssiOffset(size_t chan);
 
 	double setPowerAttenuation(int atten, size_t chan);
 	double getPowerAttenuation(size_t chan = 0);
@@ -133,7 +161,7 @@ public:
 		ERROR_UNHANDLED = -4,
 	};
 
-private:
+protected:
 	uhd::usrp::multi_usrp::sptr usrp_dev;
 	uhd::tx_streamer::sptr tx_stream;
 	uhd::rx_streamer::sptr rx_stream;
@@ -146,7 +174,6 @@ private:
 
 	std::vector<double> tx_gains, rx_gains;
 	std::vector<double> tx_freqs, rx_freqs;
-	enum gsm_band band;
 	size_t tx_spp, rx_spp;
 
 	bool started;
@@ -175,8 +202,6 @@ private:
 
 	uhd::tune_request_t select_freq(double wFreq, size_t chan, bool tx);
 	bool set_freq(double freq, size_t chan, bool tx);
-	void get_dev_band_desc(dev_band_desc& desc);
 
 	Thread *async_event_thrd;
-	Mutex tune_lock;
 };

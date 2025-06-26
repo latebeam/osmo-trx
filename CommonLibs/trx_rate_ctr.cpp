@@ -147,17 +147,17 @@ static int dev_rate_ctr_timerfd_cb(struct osmo_fd *ofd, unsigned int what) {
 		if (dev_ctrs_pending[chan].chan == PENDING_CHAN_NONE)
 			continue;
 		LOGCHAN(chan, DCTR, DEBUG) << "rate_ctr update";
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_DEV_RX_OVERRUNS];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_DEV_RX_OVERRUNS);
 		rate_ctr_add(ctr, dev_ctrs_pending[chan].rx_overruns - ctr->current);
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_DEV_TX_UNDERRUNS];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_DEV_TX_UNDERRUNS);
 		rate_ctr_add(ctr, dev_ctrs_pending[chan].tx_underruns - ctr->current);
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_DEV_RX_DROP_EV];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_DEV_RX_DROP_EV);
 		rate_ctr_add(ctr, dev_ctrs_pending[chan].rx_dropped_events - ctr->current);
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_DEV_RX_DROP_SMPL];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_DEV_RX_DROP_SMPL);
 		rate_ctr_add(ctr, dev_ctrs_pending[chan].rx_dropped_samples - ctr->current);
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_DEV_TX_DROP_EV];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_DEV_TX_DROP_EV);
 		rate_ctr_add(ctr, dev_ctrs_pending[chan].tx_dropped_events - ctr->current);
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_DEV_TX_DROP_SMPL];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_DEV_TX_DROP_SMPL);
 		rate_ctr_add(ctr, dev_ctrs_pending[chan].tx_dropped_samples - ctr->current);
 
 		/* Mark as done */
@@ -178,21 +178,21 @@ static int trx_rate_ctr_timerfd_cb(struct osmo_fd *ofd, unsigned int what) {
 		if (trx_ctrs_pending[chan].chan == PENDING_CHAN_NONE)
 			continue;
 		LOGCHAN(chan, DCTR, DEBUG) << "rate_ctr update";
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_TRX_TX_STALE_BURSTS];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_TRX_TX_STALE_BURSTS);
 		rate_ctr_add(ctr, trx_ctrs_pending[chan].tx_stale_bursts - ctr->current);
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_TRX_TX_UNAVAILABLE_BURSTS];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_TRX_TX_UNAVAILABLE_BURSTS);
 		rate_ctr_add(ctr, trx_ctrs_pending[chan].tx_unavailable_bursts - ctr->current);
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_TRX_TRXD_FN_REPEATED];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_TRX_TRXD_FN_REPEATED);
 		rate_ctr_add(ctr, trx_ctrs_pending[chan].tx_trxd_fn_repeated - ctr->current);
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_TRX_TRXD_FN_OUTOFORDER];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_TRX_TRXD_FN_OUTOFORDER);
 		rate_ctr_add(ctr, trx_ctrs_pending[chan].tx_trxd_fn_outoforder - ctr->current);
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_TRX_TRXD_FN_SKIPPED];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_TRX_TRXD_FN_SKIPPED);
 		rate_ctr_add(ctr, trx_ctrs_pending[chan].tx_trxd_fn_skipped - ctr->current);
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_TRX_RX_EMPTY_BURST];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_TRX_RX_EMPTY_BURST);
 		rate_ctr_add(ctr, trx_ctrs_pending[chan].rx_empty_burst - ctr->current);
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_TRX_RX_CLIPPING];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_TRX_RX_CLIPPING);
 		rate_ctr_add(ctr, trx_ctrs_pending[chan].rx_clipping - ctr->current);
-		ctr = &rate_ctrs[chan]->ctr[TRX_CTR_TRX_RX_NO_BURST_DETECTED];
+		ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], TRX_CTR_TRX_RX_NO_BURST_DETECTED);
 		rate_ctr_add(ctr, trx_ctrs_pending[chan].rx_no_burst_detected - ctr->current);
 		/* Mark as done */
 		trx_ctrs_pending[chan].chan = PENDING_CHAN_NONE;
@@ -214,6 +214,7 @@ static int device_sig_cb(unsigned int subsys, unsigned int signal,
 	struct timespec next_sched = {.tv_sec = 0, .tv_nsec = 20*1000*1000};
 	/* no automatic re-trigger */
 	struct timespec intv_sched = {.tv_sec = 0, .tv_nsec = 0};
+	char err_buf[256];
 
 	switch (signal) {
 	case S_DEVICE_COUNTER_CHANGE:
@@ -222,7 +223,8 @@ static int device_sig_cb(unsigned int subsys, unsigned int signal,
 		dev_rate_ctr_mutex.lock();
 		dev_ctrs_pending[dev_ctr->chan] = *dev_ctr;
 		if (osmo_timerfd_schedule(&dev_rate_ctr_timerfd, &next_sched, &intv_sched) < 0) {
-			LOGC(DCTR, ERROR) << "Failed to schedule timerfd: " << errno << " = "<< strerror(errno);
+			LOGC(DCTR, ERROR) << "Failed to schedule timerfd: " << errno
+					  << " = "<< strerror_r(errno, err_buf, sizeof(err_buf));
 		}
 		dev_rate_ctr_mutex.unlock();
 		break;
@@ -232,7 +234,8 @@ static int device_sig_cb(unsigned int subsys, unsigned int signal,
 		trx_rate_ctr_mutex.lock();
 		trx_ctrs_pending[trx_ctr->chan] = *trx_ctr;
 		if (osmo_timerfd_schedule(&trx_rate_ctr_timerfd, &next_sched, &intv_sched) < 0) {
-			LOGC(DCTR, ERROR) << "Failed to schedule timerfd: " << errno << " = "<< strerror(errno);
+			LOGC(DCTR, ERROR) << "Failed to schedule timerfd: " << errno
+					  << " = "<< strerror_r(errno, err_buf, sizeof(err_buf));
 		}
 		trx_rate_ctr_mutex.unlock();
 		break;
@@ -263,7 +266,7 @@ static void threshold_timer_cb(void *data)
 
 	llist_for_each_entry(ctr_thr, &threshold_list, list) {
 		for (chan = 0; chan < chan_len; chan++) {
-			rate_ctr = &rate_ctrs[chan]->ctr[ctr_thr->ctr_id];
+			rate_ctr = rate_ctr_group_get_ctr(rate_ctrs[chan], ctr_thr->ctr_id);
 			LOGCHAN(chan, DCTR, INFO) << "checking threshold: " << ctr_threshold_2_vty_str(ctr_thr)
 						   << " ("<< rate_ctr->intv[ctr_thr->intv].rate << " vs " << ctr_thr->val << ")";
 			if (rate_ctr->intv[ctr_thr->intv].rate >= ctr_thr->val) {
@@ -309,8 +312,7 @@ static void threshold_timer_update_intv() {
 		return;
 
 	if (llist_empty(&threshold_list)) {
-		if (osmo_timer_pending(&threshold_timer))
-			osmo_timer_del(&threshold_timer);
+		osmo_timer_del(&threshold_timer);
 		return;
 	}
 

@@ -1,3 +1,387 @@
+osmo-trx (1.7.1) unstable; urgency=medium
+
+  [ Oliver Smith ]
+  * contrib/jenkins: remove broken chroot + qemu code
+
+  [ Neels Hofmeyr ]
+  * comma_delimited_to_vector() optimization CID#465430
+
+ -- Oliver Smith <osmith@sysmocom.de>  Wed, 12 Feb 2025 12:43:24 +0100
+
+osmo-trx (1.7.0) unstable; urgency=medium
+
+  [ Eric ]
+  * ms: adjust ts advance
+  * ms: reduce rx burst queue size
+  * ms: init blade with fpga control
+  * devices: fix wrong gain to power mapping
+  * ms: get rid of std::thread
+  * ms: add demod test tool and data
+
+  [ Vadim Yanitskiy ]
+  * osmo-trx-ms: bump osmocom-bb submodule commit
+  * Transceiver::ctrl_sock_handle_rx(): fix copy-pasted comments
+  * build: include version files into the release tarball
+  * doc/examples: fix missing config files in release tarballs
+  * README.md: cosmetic: fix a typo
+
+  [ Harald Welte ]
+  * osmo-trx-uhd: Make sure HOME environment variable is set
+  * README.md: Improve markdown formatting
+  * README.md: Add Forum and Issue Tracker links
+  * Add funding link to github mirror
+  * README.md: Remove stray apostrophe
+
+  [ Andreas Eversberg ]
+  * Use uniform log format for default config files
+
+  [ Eric Wild ]
+  * ms: do not set the blade tuning mode
+  * ms: hard preswapped VA gsm bits
+  * ms: add sigproclib demod
+  * ms: fix up template deduction failure
+  * ms: update osmocom-bb submodule
+  * ms: disabe uhd ms build
+  * transceiver: use log level cache
+
+  [ Oliver Smith ]
+  * gitignore: add .version
+  * debian/rules: make configure args diff friendly
+  * debian: add osmo-trx-ms-blade
+  * contrib/jenkins: make configure args diff friendly
+  * contrib/jenkins: add --with-bladerf
+  * contrib: remove rpm spec file
+  * contrib/systemd: run as osmocom user
+  * contrib/systemd/osmo-trx-uhd: fix HOME=
+
+  [ Pau Espin Pedrol ]
+  * code-architecture.adoc: Fix missing alignment in digraph
+  * doc: Introduce documentation for osmo-trx-ipc and its IPC interface
+
+ -- Oliver Smith <osmith@sysmocom.de>  Wed, 24 Jul 2024 15:57:14 +0200
+
+osmo-trx (1.6.0) unstable; urgency=medium
+
+  [ Vadim Yanitskiy ]
+  * configure.ac: check if LIBTRXCON_DIR (submodule) exists
+  * tests: Makefile.am: move -I flags from AM_CFLAGS to AM_CPPFLAGS
+  * tests: there shall be no libraries in LDFLAGS
+  * tests: use -no-install libtool flag to avoid ./lt-* scripts
+  * tests: LMSDeviceTest: fix CPPFLAGS vs CXXFLAGS
+  * ipc-driver-test: clean up variables in Makefile.am
+  * CommonLibs: remove unused *trx in cfg[_no]_ctr_error_threshold_cmd
+  * CommonLibs: clean up and fix Makefile.am
+  * ms: logging: print category, level, and extended timestamp
+
+  [ Oliver Smith ]
+  * Run struct_endianness.py
+  * debian: set compat level to 10
+  * systemd: depend on networking-online.target
+  * USRPDevice:updateAlignment: remove byteswap code
+
+  [ Eric ]
+  * .clang-format: adjust template formatting
+  * ms: update submodule to currently known working version
+  * ms: adjust tx scaling for tx samples
+  * ms : fix the template formatting
+  * ms: fix the gain init for blade
+  * ms: prettify scheduling + add odroid
+  * ms: fix startup & shutdown of blade
+  * ms: block burst q to upper layer
+  * ms: use single thread pool
+  * ms : rename var
+  * ms : rename var
+  * ms: cache frequency
+  * ms: pretty tx buf class
+  * ms: rearrange internal trxcon<->phy if
+  * ms: remove syncthing tool
+  * ms: prune common sch acq code
+  * ms: rearrange code to allow clean exits
+  * ms: flexible template for value_type buffer sum
+  * ms: make init call less confusing
+  * transceiver: pass cfg struct instead of args
+  * devices: unify band handling
+  * ms: fix blocking logging
+  * ms: drop the tx burst padding
+  * trx: fix dev-args issue
+  * ms: update osmocom-bb
+  * ms: restructure the va code to add rach support
+  * transceiver: add experimental viterbi equalizer support
+  * ms/va: make ancient gcc < 8 happy
+  * ms: fix thread prio startup issue
+  * ms: fix a few coverity complaints related to initialization
+  * ms: bump osmocom-bb submodule to current head
+
+  [ Eric Wild ]
+  * ms: adjust float<->integral type conversion
+  * ms: sch: drop intermediate softvector
+  * devices: add freq/gain override for uhd
+
+  [ arehbein ]
+  * Transition to use of 'telnet_init_default'
+
+  [ Pau Espin Pedrol ]
+  * Call osmo_fd_unregister() before closing and changing bfd->fd
+  * ms: update osmocom-bb submodule
+
+ -- Pau Espin Pedrol <pespin@sysmocom.de>  Tue, 12 Sep 2023 15:56:57 +0200
+
+osmo-trx (1.5.0) unstable; urgency=medium
+
+  [ Oliver Smith ]
+  * configure.ac: add -lboost_thread for uhd < 4.2.0
+  * gitignore: add uhddev_ipc.cpp
+  * contrib/jenkins: don't run "make distcheck" on arm
+
+  [ Vadim Yanitskiy ]
+  * threshold_timer_update_intv(): call osmo_timer_del() unconditionally
+  * Transceiver::expectedCorrType(): RACH is always 8-bit on PTCCH/U
+  * contrib/jenkins.sh: dump submodule status before building
+  * configure.ac: fix: properly check whether to enable ms-trx
+  * configure.ac: allow building without cloning submodules
+  * configure.ac: cosmetic: rearrange MS TRX related logic
+  * configure.ac: make use of AC_MSG_CHECKING and AC_MSG_RESULT
+
+  [ Max ]
+  * Set working directory in systemd service file
+  * Add realtime scheduling and set priority in service file
+  * ctrl: take both address and port from vty config
+
+  [ Eric ]
+  * ignore vscode dirs
+  * rename noisevector class -> avgvector
+  * osmocom-bb for ms-trx side trxcon integration
+  * add checkpatch config
+  * bladerf xa4 support
+  * update osmocom-bb submodule to fix make distcheck
+  * vita demod by piotr krysik, modified
+  * properly update osmocom-bb submodule, for real this time..
+  * ms-trx support
+  * clean up mutex, scopedlock, and signal classes
+  * ipc: add missing override
+  * clang-format: proper c++ standard
+  * ipc: remove old autotools workaround
+  * ms: init trash used to escape the usb callbacks
+  * radio interface: fix init
+
+  [ Eric Wild ]
+  * mstrx: do not wait forever if clock locking fails
+
+ -- Pau Espin Pedrol <pespin@sysmocom.de>  Tue, 07 Feb 2023 17:08:17 +0100
+
+osmo-trx (1.4.1) unstable; urgency=medium
+
+  [ Oliver Smith ]
+  * treewide: remove FSF address
+
+  [ Vadim Yanitskiy ]
+  * tests: use 'check_PROGRAMS' instead of 'noinst_PROGRAMS'
+
+  [ Harald Welte ]
+  * update git URLs (git -> https; gitea)
+
+ -- Pau Espin Pedrol <pespin@sysmocom.de>  Wed, 29 Jun 2022 09:32:56 +0200
+
+osmo-trx (1.4.0) unstable; urgency=medium
+
+  [ Pau Espin Pedrol ]
+  * Threads.cpp: Fix missing extern C around libosmocore include
+  * Drop logging pthread ID
+  * Threads: Avoid printing pthread_self()
+  * ipc: Makefile.am: Clean LDADD variable
+  * Use new stat item/ctr getter APIs
+  * detectBurst(): Clear downsampling code path
+  * detectBurst(): constify parameter
+  * computeCI(): Constify param and pass it as reference
+  * computeCI(): Rename verbose repeated getter to constant
+  * computeCI(): Constify read-only variable
+  * detectGeneralBurst(): Increase log level about clipping to INFO
+  * cosmetic: Fix typo in comment
+  * computeCI: Document hardcoded multiplier
+  * lms: Drop duplicated check
+  * lms,uhd: Validate band of RxFreq too
+  * lms,uhd: Skip re-assigning same band
+  * lms,uhd: Allow changing band between poweroff & poweron
+
+  [ Vadim Yanitskiy ]
+  * gitignore: remove non-existing 'doc/manuals/osmomsc-usermanual.xml'
+  * ctrl_sock_handle_rx(): fix missing space in LOGCHAN() statement
+  * trx_rate_ctr: use thread safe strerror() in device_sig_cb()
+  * IPCDevice: use thread safe strerror_r() instead of strerror()
+  * IPCDevice: check value returned from select()
+  * LMSDevice: LMS_GetDeviceList() may return a negative number
+
+  [ Eric ]
+  * add hidden fn adjustment command
+  * uhd: ensure configured clock source is actually used
+  * vty: printing fn offset should be signed
+  * lms: init band
+
+  [ Oliver Smith ]
+  * d/patches/build-for-debian8.patch: remove
+
+ -- Pau Espin Pedrol <pespin@sysmocom.de>  Tue, 16 Nov 2021 16:27:26 +0100
+
+osmo-trx (1.3.1) unstable; urgency=medium
+
+  * mark uhddev_ipc.cpp as BUILT_SOURCES
+
+ -- Harald Welte <laforge@osmocom.org>  Sun, 28 Feb 2021 11:32:11 +0100
+
+osmo-trx (1.3.0) unstable; urgency=medium
+
+  [ Pau Espin Pedrol ]
+  * Make logging category DLMS generic and reusable for other backends
+  * uhd: Use DEVDRV log category and support UHD >=3.11 logging framework
+  * uhd: Improve some logging lines printing UHD pretty-print output
+  * doc: clarify number of channels on B210 with multi-arfcn enabled
+  * radioInterfaceMulti: Fail to tune on freq not following multi-arfcn restrictions
+  * doc: Update vty reference xml file
+  * lms: Move initialization of field started to constructor
+  * lms: Drop unused define
+  * smpl_buf: Fix str_code() param and print unknown error val
+  * lms: Improve smpl_buf error logging
+  * lms: Change radioDevice constructor arg name to avoid masking instance attr
+  * lms: Make reference to std::vector unambiguous
+  * lms: Move rx_buffers allocation to constructor
+  * lms: Store device type specific parameters in one place
+  * lms: Make ts_offset and smpl rate coefs device-specific
+  * lms: Initial multi-arfcn support
+  * contrib/jenkins.sh: Reorder sanity checks
+  * debug.h: Avoid printing pthread_t type
+  * debug.h: Fix print format of chan in CLOGCHAN
+  * cosmetic: fix several typos found by codespell
+  * radioDevice: Drop unused RSSI param from readSamples API
+  * radioDevice: Drop unused isControl param from WriteSamples API
+  * Use OSMO_FD_READ instead of deprecated BSC_FD_READ
+  * Transceiver: Fix extra space in RSP NOISELEV error
+  * Transceiver: Implement TRXC cmd NOMTXPOWER
+  * UHDDevice: Implement getNominalTxPower() based on TxFrequency
+  * radioInterface: Operate on real Tx power attenuation rather than on device specific gains
+  * UHDDevice: Compute TxGain on UHD API based on expected Tx output power
+  * proto_trxd: Fix UndefinedBehaviorSanitizer from ubsan
+  * Transceiver: Allow sending negative nominal tx power in RSP NOMTXPOWER
+  * LMSDevice: Compute TxGain on LimeSuite API based on expected Tx output power
+  * Drop old TxGain APIs from parent radioDevice abstract class
+  * {UHD,LMS}Dervice: Log expected resulting TxPower when setting device specific TxGain
+  * cosmetic: trx_rate_ctr: Fix whitespace
+  * trx_rate_ctr: Fix immediate rescheduling on per-sec thresholds
+  * Rename device specific rate counter multi-thread helpers
+  * Introduce rate counter tx_stale_bursts
+  * TransceiverState: Initialize ctrs field in constructor
+  * doc/manuals: Update thread documentation after dropping CTRL sock threads
+  * trx_rate_ctr: Fix locking wrong mutex
+  * Introduce rate counters to detect issues in received Dl bursts from TRXD
+  * Transceiver: Fix race condition obtaining Dl burst from Upper layer
+  * Add rate counter for missing Txbursts when scheduled towards the radioInterface
+  * Transceiver: Provide initial value for TransceiverState::mFiller in constructor
+  * Transceiver: Use already obtained value from Rx msg structure
+  * Transceiver: Restrict conditions where FN gaps are detected
+  * trx_rate_ctr: Lower some log levels
+  * Introduce CTR log category
+  * Transceiver: Lower some log levels which have an associated counter
+  * Transceiver: Check log level before generating burst str representation
+  * Transceiver: Add several rate_ctr for rx error conditions
+  * Use new libosmovty cpu sched config features
+  * debian: Update debian8 osmo-trx specific patch
+  * jenkins.sh: Verify distro-specific patches apply
+  * ipc: fix var declaration in for loop
+  * Add support for TRXC MUTE command
+  * arch: x86: Fix convolve optimizations breaking signal
+  * contrib/jenkins: Enable parallel make in make distcheck
+  * Transceiver: Pass config struct instead of large list of params
+  * Calculate RSSI offset based on RxGain configuration
+  * main: generate coredump and exit upon SIGABRT received
+  * ipc: Fix wrong reference to BTS in log line
+  * ipc-driver-test: Allow setting dir prefix for UD socket
+  * radioInterfaceMulti: Fix memory leak upon close()
+  * ChannelizerBase: Fix memory leak
+  * Threads.cpp: Use already existing gettid wrapper function
+  * Replace my_gettid with libosmocore osmo_gettid API
+  * tests: Explicitly drop category from log
+  * tests: Replace deprecated API log_set_print_filename
+
+  [ Philipp Maier ]
+  * debug: use LOGL_NOTICE for log category DDEV
+  * doc: do not set the base-port of the trx
+  * doc: apply an rssi-offset of 28 by default.
+  * doc: switch log levels to notice
+  * Transceiver: Log when sending of CLK indications begins
+  * vty: add attributes to VTY commands indicating when they apply
+  * osmo-trx: add commandline option --vty-ref-xml
+
+  [ Eric ]
+  * configure.ac: fix libtool issue  with clang and sanitizer
+  * transceiver: check the right vector
+  * transceiver: get rid of the ctrl threads
+  * add kernel style .clang-format with 120 chars per line limit
+  * devices: reset internal smart sample buffers upon stop
+  * transceiver: optimize code if optimizations are enabled
+  * transceiver: initialize reorder flag so we don't miscount
+
+  [ Harald Welte ]
+  * PRBS tool sending PRBS sequence to TRX
+  * prbs-tool: Add error simulation capabilities
+  * utils: Ensure content of this directory is included in 'make dist'
+  * prbs-tool: Don't require C99
+  * RPM spec file: Require uhd-firmware for osmo-trx-uhd
+  * osmo-trx.spec.in: Use %config(noreplace) to retain current config file
+  * Fix build on Debian8
+  * [cosmetic] radioInterfaceMulti: More comments
+  * [cosmetic] radioIntefaceMulti: Fix whitespace / indent
+  * ipc: Use OSMO_FD_* instead of deprecated BSC_FD_*
+  * Use osmo_fd_setup() wherever applicable
+  * Use osmo_fd_*_{disable,enable}
+  * README update
+  * manual: Fix typo OsmTRX -> OsmoTRX
+
+  [ Oliver Smith ]
+  * contrib: import RPM spec
+  * contrib: integrate RPM spec
+  * Makefile.am: EXTRA_DIST: debian, contrib/*.spec.in
+  * contrib/jenkins: don't build osmo-gsm-manuals
+  * configure.ac: set -std=gnu11
+
+  [ Vadim Yanitskiy ]
+  * UHDDevice: catch LookupError/IndexError in set{Rx,Tx}Antenna()
+  * debian/control: change maintainer to the Osmocom team / mailing list
+  * proto_trxd: cosmetic: 'if' is not a function, add space
+  * vty: add multi-ARFCN specific warning for chan N > 0
+  * radioDevice: fix set_antennas(): consider MULTI_ARFCN mode
+  * device/lms: fix: 'trx_vty.h' header requires C linkage
+  * device/lms: fix missing semicolon in LMSDevice::assign_band_desc()
+  * device/lms: get rid of 'using namespace std'
+  * device/common/Makefile.am: remove $(LMS_CFLAGS) from AM_CXXFLAGS
+  * main: add --vty-ref-mode, use vty_dump_xml_ref_mode()
+  * device: drop unreasonable LIBOSMO{CTRL,VTY}_{CFLAGS,LIBS}
+  * Transceiver: use size_t and ARRAY_SIZE() in constructor
+  * Transceiver: explicitly init m{Rx,Tx}LowerLoopThread
+  * vty: fix documentation for 'swap-channels (disable|enable)'
+  * vty: fix documentation for 'egprs (disable|enable)'
+  * vty: fix documentation for 'rx-sps (1|4)' and 'tx-sps (1|4)'
+  * vty: cosmetic: use VTY_IPV4_CMD in 'bind-ip' / 'remote-ip'
+  * vty: fix documentation for 'multi-arfcn (disable|enable)'
+  * vty: remove groundless statement about filler type 'dummy'
+  * vty: auto-generate cmd and doc strings for cfg_filler_type_cmd
+  * vty: fix documentation for 'ext-rach (disable|enable)'
+  * main: use logging API to print SIMD info instead of printf()
+  * doc/manuals: generate XML VTY reference at build-time
+  * vty: fix swapped documentation for 'filler type' command
+  * Transceiver: fix integer division in addRadioVector()
+  * Transceiver: use proper factor for amplitude scaling
+  * Add a (hidden) VTY parameter for Rx/Tx freq. shifting
+
+  [ Eric Wild ]
+  * osmo-trx-ipc
+
+  [ Alexander Couzens ]
+  * osmo-trx.spec: move ipc-driver-test into package ipc-test
+
+  [ Sylvain Munaut ]
+  * sigProcLib: fix C/I computation for 8-PSK modulated bursts
+
+ -- Pau Espin Pedrol <pespin@espeweb.net>  Tue, 23 Feb 2021 14:27:15 +0100
+
 osmo-trx (1.2.0) unstable; urgency=medium
 
   [ Pau Espin Pedrol ]

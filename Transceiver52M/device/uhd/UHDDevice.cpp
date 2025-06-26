@@ -34,7 +34,9 @@
 #endif
 
 extern "C" {
+#include <osmocom/core/utils.h>
 #include <osmocom/gsm/gsm_utils.h>
+#include <osmocom/vty/cpu_sched_vty.h>
 }
 
 #ifdef USE_UHD_3_11
@@ -89,19 +91,7 @@ extern "C" {
  *   USRP1 with timestamps is not supported by UHD.
  */
 
-/* Device Type, Tx-SPS, Rx-SPS */
-typedef std::tuple<uhd_dev_type, int, int> dev_key;
-
-/* Device parameter descriptor */
-struct dev_desc {
-	unsigned channels;
-	double mcr;
-	double rate;
-	double offset;
-	std::string str;
-};
-
-static const std::map<dev_key, dev_desc> dev_param_map {
+static const dev_map_t dev_param_map {
 	{ std::make_tuple(USRP2, 1, 1), { 1, 0.0,  390625,  1.2184e-4,  "N2XX 1 SPS"         } },
 	{ std::make_tuple(USRP2, 4, 1), { 1, 0.0,  390625,  7.6547e-5,  "N2XX 4/1 Tx/Rx SPS" } },
 	{ std::make_tuple(USRP2, 4, 4), { 1, 0.0,  390625,  4.6080e-5,  "N2XX 4 SPS"         } },
@@ -127,29 +117,21 @@ static const std::map<dev_key, dev_desc> dev_param_map {
 	{ std::make_tuple(B2XX_MCBTS, 4, 4), { 1, 51.2e6, MCBTS_SPACING*4, B2XX_TIMING_MCBTS, "B200/B210 4 SPS Multi-ARFCN" } },
 };
 
-typedef std::tuple<uhd_dev_type, enum gsm_band> dev_band_key;
-/* Maximum UHD Tx Gain which can be set/used without distorting the
-   output signal, and the resulting real output power measured when that
-   gain is used. Correct measured values only provided for B210 so far. */
-struct dev_band_desc {
-	double nom_uhd_tx_gain;  /* dB */
-	double nom_out_tx_power; /* dBm */
-};
-typedef std::map<dev_band_key, dev_band_desc>::const_iterator dev_band_map_it;
-static const std::map<dev_band_key, dev_band_desc> dev_band_nom_power_param_map {
-	{ std::make_tuple(B200, GSM_BAND_850),	{ 89.75, 13.3 } },
-	{ std::make_tuple(B200, GSM_BAND_900),	{ 89.75, 13.3 } },
-	{ std::make_tuple(B200, GSM_BAND_1800),	{ 89.75, 7.5 } },
-	{ std::make_tuple(B200, GSM_BAND_1900),	{ 89.75, 7.7 } },
-	{ std::make_tuple(B210, GSM_BAND_850),	{ 89.75, 13.3 } },
-	{ std::make_tuple(B210, GSM_BAND_900),	{ 89.75, 13.3 } },
-	{ std::make_tuple(B210, GSM_BAND_1800),	{ 89.75, 7.5 } },
-	{ std::make_tuple(B210, GSM_BAND_1900),	{ 89.75, 7.7 } },
+static const power_map_t dev_band_nom_power_param_map {
+	{ std::make_tuple(B200, GSM_BAND_850),	{ 89.75, 13.3, -7.5  } },
+	{ std::make_tuple(B200, GSM_BAND_900),	{ 89.75, 13.3, -7.5  } },
+	{ std::make_tuple(B200, GSM_BAND_1800),	{ 89.75, 7.5,  -11.0 } },
+	{ std::make_tuple(B200, GSM_BAND_1900),	{ 89.75, 7.7,  -11.0 } },
+	{ std::make_tuple(B210, GSM_BAND_850),	{ 89.75, 13.3, -7.5  } },
+	{ std::make_tuple(B210, GSM_BAND_900),	{ 89.75, 13.3, -7.5  } },
+	{ std::make_tuple(B210, GSM_BAND_1800),	{ 89.75, 7.5,  -11.0 } },
+	{ std::make_tuple(B210, GSM_BAND_1900),	{ 89.75, 7.7,  -11.0 } },
 };
 
 void *async_event_loop(uhd_device *dev)
 {
 	set_selfthread_name("UHDAsyncEvent");
+	osmo_cpu_sched_vty_apply_localthread();
 
 	while (1) {
 		dev->recv_async_msg();
@@ -224,15 +206,10 @@ static double TxPower2TxGain(const dev_band_desc &desc, double tx_power_dbm)
 	return desc.nom_uhd_tx_gain - (desc.nom_out_tx_power - tx_power_dbm);
 }
 
-uhd_device::uhd_device(size_t tx_sps, size_t rx_sps,
-		       InterfaceType iface, size_t chan_num, double lo_offset,
-		       const std::vector<std::string>& tx_paths,
-		       const std::vector<std::string>& rx_paths)
-	: RadioDevice(tx_sps, rx_sps, iface, chan_num, lo_offset, tx_paths, rx_paths),
-	  rx_gain_min(0.0), rx_gain_max(0.0),
-	  band((enum gsm_band)0), tx_spp(0), rx_spp(0),
-	  started(false), aligned(false), drop_cnt(0),
-	  prev_ts(0,0), ts_initial(0), ts_offset(0), async_event_thrd(NULL)
+uhd_device::uhd_device(InterfaceType iface, const struct trx_cfg *cfg)
+	: RadioDevice(iface, cfg), band_manager(dev_band_nom_power_param_map, dev_param_map), rx_gain_min(0.0),
+	  rx_gain_max(0.0), tx_spp(0), rx_spp(0), started(false), aligned(false), drop_cnt(0), prev_ts(0, 0),
+	  ts_initial(0), ts_offset(0), async_event_thrd(NULL)
 {
 }
 
@@ -242,27 +219,6 @@ uhd_device::~uhd_device()
 
 	for (size_t i = 0; i < rx_buffers.size(); i++)
 		delete rx_buffers[i];
-}
-
-void uhd_device::get_dev_band_desc(dev_band_desc& desc)
-{
-	dev_band_map_it it;
-	enum gsm_band req_band = band;
-
-	if (req_band == 0) {
-		LOGC(DDEV, ERROR) << "Nominal Tx Power requested before Tx Frequency was set! Providing band 900 by default... ";
-		req_band = GSM_BAND_900;
-	}
-	it = dev_band_nom_power_param_map.find(dev_band_key(dev_type, req_band));
-	if (it == dev_band_nom_power_param_map.end()) {
-		dev_desc desc = dev_param_map.at(dev_key(dev_type, tx_sps, rx_sps));
-		LOGC(DDEV, ERROR) << "No Tx Power measurements exist for device "
-				    << desc.str << " on band " << gsm_band_name(req_band)
-				    << ", using B210 ones as fallback";
-		it = dev_band_nom_power_param_map.find(dev_band_key(B210, req_band));
-	}
-	OSMO_ASSERT(it != dev_band_nom_power_param_map.end())
-	desc = it->second;
 }
 
 void uhd_device::init_gains()
@@ -329,7 +285,7 @@ void uhd_device::set_rates()
 	rx_rate = usrp_dev->get_rx_rate();
 
 	ts_offset = static_cast<TIMESTAMP>(desc.offset * rx_rate);
-	LOGC(DDEV, INFO) << "Rates configured for " << desc.str;
+	LOGC(DDEV, INFO) << "Rates configured for " << desc.desc_str;
 }
 
 double uhd_device::setRxGain(double db, size_t chan)
@@ -338,6 +294,9 @@ double uhd_device::setRxGain(double db, size_t chan)
 		LOGC(DDEV, ALERT) << "Requested non-existent channel " << chan;
 		return 0.0f;
 	}
+
+	if (cfg->overrides.ul_gain_override)
+		return rx_gains[chan];
 
 	usrp_dev->set_rx_gain(db, chan);
 	rx_gains[chan] = usrp_dev->get_rx_gain(chan);
@@ -357,6 +316,21 @@ double uhd_device::getRxGain(size_t chan)
 	return rx_gains[chan];
 }
 
+double uhd_device::rssiOffset(size_t chan)
+{
+	double rssiOffset;
+	dev_band_desc desc;
+
+	if (chan >= rx_gains.size()) {
+		LOGC(DDEV, ALERT) << "Requested non-existent channel " << chan;
+		return 0.0f;
+	}
+
+	get_dev_band_desc(desc);
+	rssiOffset = rx_gains[chan] + desc.rxgain2rssioffset_rel;
+	return rssiOffset;
+}
+
 double uhd_device::setPowerAttenuation(int atten, size_t chan) {
 	double tx_power, db;
 	dev_band_desc desc;
@@ -365,6 +339,9 @@ double uhd_device::setPowerAttenuation(int atten, size_t chan) {
 		LOGC(DDEV, ALERT) << "Requested non-existent channel" << chan;
 		return 0.0f;
 	}
+
+	if (cfg->overrides.dl_gain_override)
+		return atten; // ensures caller does not apply digital attenuation
 
 	get_dev_band_desc(desc);
 	tx_power = desc.nom_out_tx_power - atten;
@@ -517,9 +494,10 @@ void uhd_device::set_channels(bool swap)
 	}
 }
 
-int uhd_device::open(const std::string &args, int ref, bool swap_channels)
+int uhd_device::open()
 {
 	const char *refstr;
+	int clock_lock_attempts = 15;
 
 	/* Register msg handler. Different APIs depending on UHD version */
 #ifdef USE_UHD_3_11
@@ -532,10 +510,10 @@ int uhd_device::open(const std::string &args, int ref, bool swap_channels)
 #endif
 
 	// Find UHD devices
-	uhd::device_addr_t addr(args);
+	uhd::device_addr_t addr(cfg->dev_args);
 	uhd::device_addrs_t dev_addrs = uhd::device::find(addr);
 	if (dev_addrs.size() == 0) {
-		LOGC(DDEV, ALERT) << "No UHD devices found with address '" << args << "'";
+		LOGC(DDEV, ALERT) << "No UHD devices found with address '" << cfg->dev_args << "'";
 		return -1;
 	}
 
@@ -544,7 +522,7 @@ int uhd_device::open(const std::string &args, int ref, bool swap_channels)
 	try {
 		usrp_dev = uhd::usrp::multi_usrp::make(addr);
 	} catch(uhd::key_error::exception &e) {
-		LOGC(DDEV, ALERT) << "UHD make failed, device " << args << ", exception:\n" << e.what();
+		LOGC(DDEV, ALERT) << "UHD make failed, device " << cfg->dev_args << ", exception:\n" << e.what();
 		return -1;
 	}
 
@@ -552,14 +530,16 @@ int uhd_device::open(const std::string &args, int ref, bool swap_channels)
 	if (!parse_dev_type())
 		return -1;
 
+	update_band_dev(dev_key(dev_type, tx_sps, rx_sps));
+
 	if ((dev_type == E3XX) && !uhd_e3xx_version_chk()) {
 		LOGC(DDEV, ALERT) << "E3XX requires UHD 003.009.000 or greater";
 		return -1;
 	}
 
 	try {
-		set_channels(swap_channels);
-        } catch (const std::exception &e) {
+		set_channels(cfg->swap_channels);
+	} catch (const std::exception &e) {
 		LOGC(DDEV, ALERT) << "Channel setting failed - " << e.what();
 		return -1;
 	}
@@ -575,7 +555,7 @@ int uhd_device::open(const std::string &args, int ref, bool swap_channels)
 	rx_gains.resize(chans);
 	rx_buffers.resize(chans);
 
-	switch (ref) {
+	switch (cfg->clock_ref) {
 	case REF_INTERNAL:
 		refstr = "internal";
 		break;
@@ -591,6 +571,19 @@ int uhd_device::open(const std::string &args, int ref, bool swap_channels)
 	}
 
 	usrp_dev->set_clock_source(refstr);
+
+	std::vector<std::string> sensor_names = usrp_dev->get_mboard_sensor_names();
+	if (std::find(sensor_names.begin(), sensor_names.end(), "ref_locked") != sensor_names.end()) {
+		LOGC(DDEV, INFO) << "Waiting for clock reference lock (max " << clock_lock_attempts << "s)..." << std::flush;
+		while (!usrp_dev->get_mboard_sensor("ref_locked", 0).to_bool() && clock_lock_attempts--)
+			sleep(1);
+
+		if (!clock_lock_attempts) {
+			LOGC(DDEV, ALERT) << "Locking to external 10Mhz failed!";
+			return -1;
+		}
+	}
+	LOGC(DDEV, INFO) << "Selected clock source is " << usrp_dev->get_clock_source(0);
 
 	try {
 		set_rates();
@@ -640,6 +633,32 @@ int uhd_device::open(const std::string &args, int ref, bool swap_channels)
 
 	// Print configuration
 	LOGC(DDEV, INFO) << "Device configuration: " << usrp_dev->get_pp_string();
+
+	if (cfg->overrides.dl_freq_override) {
+		uhd::tune_request_t treq_tx = uhd::tune_request_t(cfg->overrides.dl_freq, 0);
+		auto tres = usrp_dev->set_tx_freq(treq_tx, 0);
+		tx_freqs[0] = usrp_dev->get_tx_freq(0);
+		LOGCHAN(0, DDEV, INFO) << "OVERRIDE set_freq(" << tx_freqs[0] << ", TX): " << tres.to_pp_string() << std::endl;
+	}
+
+	if (cfg->overrides.ul_freq_override) {
+		uhd::tune_request_t treq_rx = uhd::tune_request_t(cfg->overrides.ul_freq, 0);
+		auto tres = usrp_dev->set_rx_freq(treq_rx, 0);
+		rx_freqs[0] = usrp_dev->get_rx_freq(0);
+		LOGCHAN(0, DDEV, INFO) << "OVERRIDE set_freq(" << rx_freqs[0] << ", RX): " << tres.to_pp_string() << std::endl;
+	}
+
+	if (cfg->overrides.ul_gain_override) {
+		usrp_dev->set_rx_gain(cfg->overrides.ul_gain, 0);
+		rx_gains[0] = usrp_dev->get_rx_gain(0);
+		LOGCHAN(0, DDEV, INFO) << " OVERRIDE RX gain:" << rx_gains[0] << std::endl;
+	}
+
+	if (cfg->overrides.dl_gain_override) {
+		usrp_dev->set_tx_gain(cfg->overrides.dl_gain, 0);
+		tx_gains[0] = usrp_dev->get_tx_gain(0);
+		LOGCHAN(0, DDEV, INFO) << " OVERRIDE TX gain:" << tx_gains[0] << std::endl;
+	}
 
 	if (iface == MULTI_ARFCN)
 		return MULTI_ARFCN;
@@ -746,6 +765,12 @@ bool uhd_device::stop()
 	async_event_thrd->cancel();
 	async_event_thrd->join();
 	delete async_event_thrd;
+
+	/* reset internal buffer timestamps */
+	for (size_t i = 0; i < rx_buffers.size(); i++)
+		rx_buffers[i]->reset();
+
+	band_reset();
 
 	started = false;
 	return true;
@@ -985,17 +1010,22 @@ bool uhd_device::set_freq(double freq, size_t chan, bool tx)
 {
 	std::vector<double> freqs;
 	uhd::tune_result_t tres;
+	std::string str_dir = tx ? "Tx" : "Rx";
+
+	if (cfg->overrides.dl_freq_override || cfg->overrides.ul_freq_override)
+		return true;
+
+	if (!update_band_from_freq(freq, chan, tx))
+		return false;
+
 	uhd::tune_request_t treq = select_freq(freq, chan, tx);
-	std::string str_dir;
 
 	if (tx) {
 		tres = usrp_dev->set_tx_freq(treq, chan);
 		tx_freqs[chan] = usrp_dev->get_tx_freq(chan);
-		str_dir = "Tx";
 	} else {
 		tres = usrp_dev->set_rx_freq(treq, chan);
 		rx_freqs[chan] = usrp_dev->get_rx_freq(chan);
-		str_dir = "Rx";
 	}
 	LOGCHAN(chan, DDEV, INFO) << "set_freq(" << freq << ", " << str_dir << "): " << tres.to_pp_string() << std::endl;
 
@@ -1025,37 +1055,12 @@ bool uhd_device::set_freq(double freq, size_t chan, bool tx)
 
 bool uhd_device::setTxFreq(double wFreq, size_t chan)
 {
-	uint16_t req_arfcn;
-	enum gsm_band req_band;
-
 	if (chan >= tx_freqs.size()) {
 		LOGC(DDEV, ALERT) << "Requested non-existent channel " << chan;
 		return false;
 	}
-	ScopedLock lock(tune_lock);
 
-	req_arfcn = gsm_freq102arfcn(wFreq / 1000 / 100 , 0);
-	if (req_arfcn == 0xffff) {
-		LOGCHAN(chan, DDEV, ALERT) << "Unknown ARFCN for Tx Frequency " << wFreq / 1000 << " kHz";
-		return false;
-	}
-	if (gsm_arfcn2band_rc(req_arfcn, &req_band) < 0) {
-		LOGCHAN(chan, DDEV, ALERT) << "Unknown GSM band for Tx Frequency " << wFreq
-					   << " Hz (ARFCN " << req_arfcn << " )";
-		return false;
-	}
-
-	if (band != 0 && req_band != band) {
-		LOGCHAN(chan, DDEV, ALERT) << "Requesting Tx Frequency " << wFreq
-					   << " Hz different from previous band " << gsm_band_name(band);
-		return false;
-	}
-
-	if (!set_freq(wFreq, chan, true))
-		return false;
-
-	band = req_band;
-	return true;
+	return set_freq(wFreq, chan, true);
 }
 
 bool uhd_device::setRxFreq(double wFreq, size_t chan)
@@ -1064,7 +1069,6 @@ bool uhd_device::setRxFreq(double wFreq, size_t chan)
 		LOGC(DDEV, ALERT) << "Requested non-existent channel " << chan;
 		return false;
 	}
-	ScopedLock lock(tune_lock);
 
 	return set_freq(wFreq, chan, false);
 }
@@ -1313,10 +1317,9 @@ std::string uhd_device::str_code(uhd::async_metadata_t metadata)
 	return ost.str();
 }
 
-RadioDevice *RadioDevice::make(size_t tx_sps, size_t rx_sps,
-			       InterfaceType iface, size_t chans, double lo_offset,
-			       const std::vector<std::string>& tx_paths,
-			       const std::vector<std::string>& rx_paths)
+#ifndef IPCMAGIC
+RadioDevice *RadioDevice::make(InterfaceType type, const struct trx_cfg *cfg)
 {
-	return new uhd_device(tx_sps, rx_sps, iface, chans, lo_offset, tx_paths, rx_paths);
+	return new uhd_device(type, cfg);
 }
+#endif

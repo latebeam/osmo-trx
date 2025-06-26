@@ -32,11 +32,9 @@
 #include "Timeval.h"
 #include "Logger.h"
 
-#ifndef gettid
-#include <sys/syscall.h>
-#define gettid() syscall(SYS_gettid)
-#endif
-
+extern "C" {
+#include <osmocom/core/thread.h>
+}
 
 using namespace std;
 
@@ -45,76 +43,11 @@ using namespace std;
 #endif
 
 
-Mutex gStreamLock;		///< Global lock to control access to cout and cerr.
-
-void lockCout()
-{
-	gStreamLock.lock();
-	Timeval entryTime;
-	cout << entryTime << " " << pthread_self() << ": ";
-}
-
-
-void unlockCout()
-{
-	cout << dec << endl << flush;
-	gStreamLock.unlock();
-}
-
-
-void lockCerr()
-{
-	gStreamLock.lock();
-	Timeval entryTime;
-	cerr << entryTime << " " << pthread_self() << ": ";
-}
-
-void unlockCerr()
-{
-	cerr << dec << endl << flush;
-	gStreamLock.unlock();
-}
-
-
-
-
-
-
-
-Mutex::Mutex()
-{
-	bool res;
-	res = pthread_mutexattr_init(&mAttribs);
-	assert(!res);
-	res = pthread_mutexattr_settype(&mAttribs,PTHREAD_MUTEX_RECURSIVE);
-	assert(!res);
-	res = pthread_mutex_init(&mMutex,&mAttribs);
-	assert(!res);
-}
-
-
-Mutex::~Mutex()
-{
-	pthread_mutex_destroy(&mMutex);
-	bool res = pthread_mutexattr_destroy(&mAttribs);
-	assert(!res);
-}
-
-
-
-
-/** Block for the signal up to the cancellation timeout. */
-void Signal::wait(Mutex& wMutex, unsigned timeout) const
-{
-	Timeval then(timeout);
-	struct timespec waitTime = then.timespec();
-	pthread_cond_timedwait(&mSignal,&wMutex.mMutex,&waitTime);
-}
 
 void set_selfthread_name(const char *name)
 {
 	pthread_t selfid = pthread_self();
-	pid_t tid = gettid();
+	pid_t tid = osmo_gettid();
 	if (pthread_setname_np(selfid, name) == 0) {
 		LOG(INFO) << "Thread "<< selfid << " (task " << tid << ") set name: " << name;
 	} else {

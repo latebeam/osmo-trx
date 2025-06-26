@@ -27,6 +27,9 @@
 #include <Threads.h>
 
 extern "C" {
+#include <osmocom/core/utils.h>
+#include <osmocom/vty/cpu_sched_vty.h>
+
 #include "convert.h"
 }
 
@@ -36,9 +39,10 @@ extern "C" {
 RadioInterface::RadioInterface(RadioDevice *wDevice, size_t tx_sps,
                                size_t rx_sps, size_t chans,
                                int wReceiveOffset, GSM::Time wStartTime)
-  : mDevice(wDevice), mSPSTx(tx_sps), mSPSRx(rx_sps), mChans(chans),
-    underrun(false), overrun(false), writeTimestamp(0), readTimestamp(0),
-    receiveOffset(wReceiveOffset), mOn(false)
+  : mSPSTx(tx_sps), mSPSRx(rx_sps), mChans(chans), mReceiveFIFO(mChans), mDevice(wDevice),
+    sendBuffer(mChans), recvBuffer(mChans), convertRecvBuffer(mChans),
+    convertSendBuffer(mChans), powerScaling(mChans), underrun(false), overrun(false),
+    writeTimestamp(0), readTimestamp(0), receiveOffset(wReceiveOffset), mOn(false)
 {
   mClock.set(wStartTime);
 }
@@ -54,15 +58,6 @@ bool RadioInterface::init(int type)
     LOG(ALERT) << "Invalid configuration";
     return false;
   }
-
-  close();
-
-  sendBuffer.resize(mChans);
-  recvBuffer.resize(mChans);
-  convertSendBuffer.resize(mChans);
-  convertRecvBuffer.resize(mChans);
-  mReceiveFIFO.resize(mChans);
-  powerScaling.resize(mChans);
 
   for (size_t i = 0; i < mChans; i++) {
     sendBuffer[i] = new RadioBuffer(NUMCHUNKS, CHUNK * mSPSTx, 0, true);
@@ -171,6 +166,7 @@ bool RadioInterface::tuneRx(double freq, size_t chan)
 void *AlignRadioServiceLoopAdapter(RadioInterface *radioInterface)
 {
   set_selfthread_name("AlignRadio");
+  OSMO_ASSERT(osmo_cpu_sched_vty_apply_localthread() == 0);
   while (1) {
     sleep(60);
     radioInterface->alignRadio();
@@ -316,6 +312,11 @@ VectorFIFO* RadioInterface::receiveFIFO(size_t chan)
 double RadioInterface::setRxGain(double dB, size_t chan)
 {
   return mDevice->setRxGain(dB, chan);
+}
+
+double RadioInterface::rssiOffset(size_t chan)
+{
+	return mDevice->rssiOffset(chan);
 }
 
 /* Receive a timestamped chunk from the device */

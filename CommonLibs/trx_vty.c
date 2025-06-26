@@ -67,6 +67,15 @@ static const struct value_string filler_types[] = {
 	{ 0,			NULL }
 };
 
+static const struct value_string filler_docs[] = {
+	{ FILLER_DUMMY,		"Send a Dummy Burst on C0 (TRX0) and empty burst on other channels" },
+	{ FILLER_ZERO,		"Send an empty burst (default)" },
+	{ FILLER_NORM_RAND,	"Send a GMSK modulated Normal Burst with random bits (spectrum mask testing)" },
+	{ FILLER_EDGE_RAND,	"Send an 8-PSK modulated Normal Burst with random bits (spectrum mask testing)" },
+	{ FILLER_ACCESS_RAND,	"Send an Access Burst with random bits (Rx/Tx alignment testing)" },
+	{ 0,			NULL }
+};
+
 
 struct trx_ctx *trx_from_vty(struct vty *v)
 {
@@ -112,7 +121,7 @@ DEFUN(cfg_trx, cfg_trx_cmd,
 }
 
 DEFUN(cfg_bind_ip, cfg_bind_ip_cmd,
-	"bind-ip A.B.C.D",
+	"bind-ip " VTY_IPV4_CMD,
 	"Set the IP address for the local bind\n"
 	"IPv4 Address\n")
 {
@@ -124,7 +133,7 @@ DEFUN(cfg_bind_ip, cfg_bind_ip_cmd,
 }
 
 DEFUN(cfg_remote_ip, cfg_remote_ip_cmd,
-	"remote-ip A.B.C.D",
+	"remote-ip " VTY_IPV4_CMD,
 	"Set the IP address for the remote BTS\n"
 	"IPv4 Address\n")
 {
@@ -162,7 +171,9 @@ DEFUN(cfg_dev_args, cfg_dev_args_cmd,
 DEFUN(cfg_tx_sps, cfg_tx_sps_cmd,
 	"tx-sps (1|4)",
 	"Set the Tx Samples-per-Symbol\n"
-	"Tx Samples-per-Symbol\n")
+	"Tx Samples-per-Symbol\n"
+	"1 Sample-per-Symbol\n"
+	"4 Samples-per-Symbol\n")
 {
 	struct trx_ctx *trx = trx_from_vty(vty);
 
@@ -174,7 +185,9 @@ DEFUN(cfg_tx_sps, cfg_tx_sps_cmd,
 DEFUN(cfg_rx_sps, cfg_rx_sps_cmd,
 	"rx-sps (1|4)",
 	"Set the Rx Samples-per-Symbol\n"
-	"Rx Samples-per-Symbol\n")
+	"Rx Samples-per-Symbol\n"
+	"1 Sample-per-Symbol\n"
+	"4 Samples-per-Symbol\n")
 {
 	struct trx_ctx *trx = trx_from_vty(vty);
 
@@ -199,7 +212,8 @@ DEFUN(cfg_clock_ref, cfg_clock_ref_cmd,
 
 DEFUN(cfg_multi_arfcn, cfg_multi_arfcn_cmd,
 	"multi-arfcn (disable|enable)",
-	"Enable multi-ARFCN transceiver (default=disable)\n")
+	"Multi-ARFCN transceiver mode (default=disable)\n"
+	"Enable multi-ARFCN mode\n" "Disable multi-ARFCN mode\n")
 {
 	struct trx_ctx *trx = trx_from_vty(vty);
 
@@ -230,21 +244,125 @@ DEFUN(cfg_offset, cfg_offset_cmd,
 	return CMD_SUCCESS;
 }
 
+DEFUN_ATTR(cfg_freq_offset, cfg_freq_offset_cmd,
+	   "freq-offset FLOAT",
+	   "Apply an artificial offset to Rx/Tx carrier frequency\n"
+	   "Frequency offset in kHz (e.g. -145300)\n",
+	   CMD_ATTR_HIDDEN)
+{
+	struct trx_ctx *trx = trx_from_vty(vty);
+
+	trx->cfg.freq_offset_khz = atof(argv[0]);
+
+	return CMD_SUCCESS;
+}
+
 DEFUN(cfg_rssi_offset, cfg_rssi_offset_cmd,
-	"rssi-offset FLOAT",
+	"rssi-offset FLOAT [relative]",
 	"Set the RSSI to dBm offset in dB (default=0)\n"
-	"RSSI to dBm offset in dB\n")
+	"RSSI to dBm offset in dB\n"
+	"Add to the default rssi-offset value instead of completely replacing it\n")
 {
 	struct trx_ctx *trx = trx_from_vty(vty);
 
 	trx->cfg.rssi_offset = atof(argv[0]);
+	trx->cfg.force_rssi_offset = (argc == 1);
+
+	return CMD_SUCCESS;
+}
+
+
+DEFUN_ATTR(cfg_ul_fn_offset, cfg_ul_fn_offset_cmd,
+	"ul-fn-offset <-10-10>",
+	"Adjusts the uplink frame FN by the specified amount\n"
+	"Frame Number offset\n",
+	CMD_ATTR_HIDDEN)
+{
+	struct trx_ctx *trx = trx_from_vty(vty);
+
+	trx->cfg.ul_fn_offset = atoi(argv[0]);
+
+	return CMD_SUCCESS;
+}
+
+DEFUN_ATTR(cfg_ul_freq_override, cfg_ul_freq_override_cmd,
+	   "ul-freq-override FLOAT",
+	   "Overrides Rx carrier frequency\n"
+	   "Frequency in Hz (e.g. 145300000)\n",
+	   CMD_ATTR_HIDDEN)
+{
+	struct trx_ctx *trx = trx_from_vty(vty);
+
+	trx->cfg.overrides.ul_freq_override = true;
+	trx->cfg.overrides.ul_freq = atof(argv[0]);
+
+	return CMD_SUCCESS;
+}
+DEFUN_ATTR(cfg_dl_freq_override, cfg_dl_freq_override_cmd,
+	   "dl-freq-override FLOAT",
+	   "Overrides Tx carrier frequency\n"
+	   "Frequency in Hz (e.g. 145300000)\n",
+	   CMD_ATTR_HIDDEN)
+{
+	struct trx_ctx *trx = trx_from_vty(vty);
+
+	trx->cfg.overrides.dl_freq_override = true;
+	trx->cfg.overrides.dl_freq = atof(argv[0]);
+
+	return CMD_SUCCESS;
+}
+
+DEFUN_ATTR(cfg_ul_gain_override, cfg_ul_gain_override_cmd,
+	   "ul-gain-override FLOAT",
+	   "Overrides Rx gain\n"
+	   "gain in dB\n",
+	   CMD_ATTR_HIDDEN)
+{
+	struct trx_ctx *trx = trx_from_vty(vty);
+
+	trx->cfg.overrides.ul_gain_override = true;
+	trx->cfg.overrides.ul_gain = atof(argv[0]);
+
+	return CMD_SUCCESS;
+}
+DEFUN_ATTR(cfg_dl_gain_override, cfg_dl_gain_override_cmd,
+	   "dl-gain-override FLOAT",
+	   "Overrides Tx gain\n"
+	   "gain in dB\n",
+	   CMD_ATTR_HIDDEN)
+{
+	struct trx_ctx *trx = trx_from_vty(vty);
+
+	trx->cfg.overrides.dl_gain_override = true;
+	trx->cfg.overrides.dl_gain = atof(argv[0]);
+
+	return CMD_SUCCESS;
+}
+
+DEFUN_ATTR(cfg_use_viterbi, cfg_use_viterbi_cmd,
+	"viterbi-eq (disable|enable)",
+	"Use viterbi equalizer for gmsk (default=disable)\n"
+	"Disable VA\n"
+	"Enable VA\n",
+	CMD_ATTR_HIDDEN)
+{
+	struct trx_ctx *trx = trx_from_vty(vty);
+
+	if (strcmp("disable", argv[0]) == 0)
+		trx->cfg.use_va = false;
+	else if (strcmp("enable", argv[0]) == 0)
+		trx->cfg.use_va = true;
+	else
+		return CMD_WARNING;
 
 	return CMD_SUCCESS;
 }
 
 DEFUN(cfg_swap_channels, cfg_swap_channels_cmd,
 	"swap-channels (disable|enable)",
-	"Swap channels (default=disable)\n")
+	"Swap primary and secondary channels of the PHY (if any)\n"
+	"Do not swap primary and secondary channels (default)\n"
+	"Swap primary and secondary channels\n")
 {
 	struct trx_ctx *trx = trx_from_vty(vty);
 
@@ -261,7 +379,9 @@ DEFUN(cfg_swap_channels, cfg_swap_channels_cmd,
 
 DEFUN(cfg_egprs, cfg_egprs_cmd,
 	"egprs (disable|enable)",
-	"Enable EDGE receiver (default=disable)\n")
+	"EGPRS (8-PSK demodulation) support (default=disable)\n"
+	"Disable EGPRS (8-PSK demodulation) support\n"
+	"Enable EGPRS (8-PSK demodulation) support\n")
 {
 	struct trx_ctx *trx = trx_from_vty(vty);
 
@@ -278,7 +398,9 @@ DEFUN(cfg_egprs, cfg_egprs_cmd,
 
 DEFUN(cfg_ext_rach, cfg_ext_rach_cmd,
 	"ext-rach (disable|enable)",
-	"Enable extended (11-bit) RACH (default=disable)\n")
+	"11-bit Access Burst correlation support (default=disable)\n"
+	"Disable 11-bit Access Burst (TS1 & TS2) correlation\n"
+	"Enable 11-bit Access Burst (TS1 & TS2) correlation\n")
 {
 	struct trx_ctx *trx = trx_from_vty(vty);
 
@@ -291,7 +413,7 @@ DEFUN(cfg_ext_rach, cfg_ext_rach_cmd,
 	return CMD_SUCCESS;
 }
 
-DEFUN(cfg_rt_prio, cfg_rt_prio_cmd,
+DEFUN_DEPRECATED(cfg_rt_prio, cfg_rt_prio_cmd,
 	"rt-prio <1-32>",
 	"Set the SCHED_RR real-time priority\n"
 	"Real time priority\n")
@@ -299,6 +421,8 @@ DEFUN(cfg_rt_prio, cfg_rt_prio_cmd,
 	struct trx_ctx *trx = trx_from_vty(vty);
 
 	trx->cfg.sched_rr = atoi(argv[0]);
+	vty_out (vty, "%% 'rt-prio %u' is deprecated, use 'policy rr %u' under 'sched' node instead%s",
+		 trx->cfg.sched_rr, trx->cfg.sched_rr, VTY_NEWLINE);
 
 	return CMD_SUCCESS;
 }
@@ -315,20 +439,11 @@ DEFUN(cfg_stack_size, cfg_stack_size_cmd,
 	return CMD_SUCCESS;
 }
 
-DEFUN(cfg_filler, cfg_filler_type_cmd,
-	"filler type (zero|dummy|random-nb-gmsk|random-nb-8psk|random-ab)",
+#define CFG_FILLER_DOC_STR \
 	"Filler burst settings\n"
-	"Filler burst type (default=zero)\n"
-	"Send an empty burst when there is nothing to send (default)\n"
-	"Send a dummy burst when there is nothing to send on C0 (TRX0) and empty burst on other channels."
-	" Use for OpenBTS compatibility only, don't use with OsmoBTS as it breaks encryption.\n"
-	"Send a GMSK modulated Normal Burst with random bits when there is nothing to send."
-	" Use for spectrum mask testing. Configure 'filler tsc' to set training sequence.\n"
-	"Send an 8-PSK modulated Normal Burst with random bits when there is nothing to send."
-	" Use for spectrum mask testing. Configure 'filler tsc' to set training sequence.\n"
-	"Send an Access Burst with random bits when there is nothing to send. Use for Rx/Tx alignment."
-	" Configure 'filler access-burst-delay' to introduce artificial delay.\n"
-)
+
+DEFUN(cfg_filler, cfg_filler_type_cmd,
+      "AUTO-GENERATED", "AUTO-GENERATED")
 {
 	struct trx_ctx *trx = trx_from_vty(vty);
 	// trx->cfg.filler is unsigned, so we need an interim int var to detect errors
@@ -345,7 +460,7 @@ DEFUN(cfg_filler, cfg_filler_type_cmd,
 
 DEFUN(cfg_test_rtsc, cfg_filler_tsc_cmd,
 	"filler tsc <0-7>",
-	"Filler burst settings\n"
+	CFG_FILLER_DOC_STR
 	"Set the TSC for GMSK/8-PSK Normal Burst random fillers. Used only with 'random-nb-gmsk' and"
 	" 'random-nb-8psk' filler types. (default=0)\n"
 	"TSC\n")
@@ -359,7 +474,7 @@ DEFUN(cfg_test_rtsc, cfg_filler_tsc_cmd,
 
 DEFUN(cfg_test_rach_delay, cfg_filler_rach_delay_cmd,
 	"filler access-burst-delay <0-68>",
-	"Filler burst settings\n"
+	CFG_FILLER_DOC_STR
 	"Set the delay for Access Burst random fillers. Used only with 'random-ab' filler type. (default=0)\n"
 	"RACH delay in symbols\n")
 {
@@ -413,17 +528,17 @@ static int vty_intv_name_2_id(const char* str) {
 	INTV_STR_VAL(per-hour) \
 	INTV_STR_VAL(per-day)
 
-DEFUN(cfg_ctr_error_threshold, cfg_ctr_error_threshold_cmd,
-	"ctr-error-threshold " THRESHOLD_ARGS " <0-65535> " INTV_ARGS,
-	"Threshold rate for error counter\n"
-	THRESHOLD_STRS
-	"Value to set for threshold\n"
-	INTV_STRS)
+DEFUN_ATTR(cfg_ctr_error_threshold, cfg_ctr_error_threshold_cmd,
+	   "ctr-error-threshold " THRESHOLD_ARGS " <0-65535> " INTV_ARGS,
+	   "Threshold rate for error counter\n"
+	   THRESHOLD_STRS
+	   "Value to set for threshold\n"
+	   INTV_STRS,
+	   CMD_ATTR_IMMEDIATE)
 {
 	int rc;
 	struct ctr_threshold ctr;
 
-	struct trx_ctx *trx = trx_from_vty(vty);
 	rc = vty_ctr_name_2_id(argv[0]);
 	if (rc < 0) {
 		vty_out(vty, "No valid ctr_name found for ctr-error-threshold %s%s",
@@ -444,17 +559,17 @@ DEFUN(cfg_ctr_error_threshold, cfg_ctr_error_threshold_cmd,
 	return CMD_SUCCESS;
 }
 
-DEFUN(cfg_no_ctr_error_threshold, cfg_no_ctr_error_threshold_cmd,
-	"no ctr-error-threshold " THRESHOLD_ARGS " <0-65535> " INTV_ARGS,
-	NO_STR "Threshold rate for error counter\n"
-	THRESHOLD_STRS
-	"Value to set for threshold\n"
-	INTV_STRS)
+DEFUN_ATTR(cfg_no_ctr_error_threshold, cfg_no_ctr_error_threshold_cmd,
+	   "no ctr-error-threshold " THRESHOLD_ARGS " <0-65535> " INTV_ARGS,
+	   NO_STR "Threshold rate for error counter\n"
+	   THRESHOLD_STRS
+	   "Value to set for threshold\n"
+	   INTV_STRS,
+	   CMD_ATTR_IMMEDIATE)
 {
 	int rc;
 	struct ctr_threshold ctr;
 
-	struct trx_ctx *trx = trx_from_vty(vty);
 	rc = vty_ctr_name_2_id(argv[0]);
 	if (rc < 0) {
 		vty_out(vty, "No valid ctr_name found for ctr-error-threshold %s%s",
@@ -518,6 +633,12 @@ DEFUN(cfg_chan_rx_path, cfg_chan_rx_path_cmd,
 {
 	struct trx_chan *chan = vty->index;
 
+	if (chan->trx->cfg.multi_arfcn && chan->idx > 0) {
+		vty_out(vty, "%% Setting 'rx-path' for chan %u in multi-ARFCN mode "
+			     "does not make sense, because only chan 0 is used%s",
+			chan->idx, VTY_NEWLINE);
+	}
+
 	osmo_talloc_replace_string(chan->trx, &chan->rx_path, argv[0]);
 
 	return CMD_SUCCESS;
@@ -529,6 +650,12 @@ DEFUN(cfg_chan_tx_path, cfg_chan_tx_path_cmd,
 	"Tx Path name\n")
 {
 	struct trx_chan *chan = vty->index;
+
+	if (chan->trx->cfg.multi_arfcn && chan->idx > 0) {
+		vty_out(vty, "%% Setting 'tx-path' for chan %u in multi-ARFCN mode "
+			     "does not make sense, because only chan 0 is used%s",
+			chan->idx, VTY_NEWLINE);
+	}
 
 	osmo_talloc_replace_string(chan->trx, &chan->tx_path, argv[0]);
 
@@ -553,7 +680,7 @@ static int config_write_trx(struct vty *vty)
 		vty_out(vty, " remote-ip %s%s", trx->cfg.remote_addr, VTY_NEWLINE);
 	if (trx->cfg.base_port != DEFAULT_TRX_PORT)
 		vty_out(vty, " base-port %u%s", trx->cfg.base_port, VTY_NEWLINE);
-	if (trx->cfg.dev_args)
+	if (strlen(trx->cfg.dev_args))
 		vty_out(vty, " dev-args %s%s", trx->cfg.dev_args, VTY_NEWLINE);
 	if (trx->cfg.tx_sps != DEFAULT_TX_SPS)
 		vty_out(vty, " tx-sps %u%s", trx->cfg.tx_sps, VTY_NEWLINE);
@@ -564,8 +691,11 @@ static int config_write_trx(struct vty *vty)
 	vty_out(vty, " multi-arfcn %s%s", trx->cfg.multi_arfcn ? "enable" : "disable", VTY_NEWLINE);
 	if (trx->cfg.offset != 0)
 		vty_out(vty, " offset %f%s", trx->cfg.offset, VTY_NEWLINE);
-	if (trx->cfg.rssi_offset != 0)
-		vty_out(vty, " rssi-offset %f%s", trx->cfg.rssi_offset, VTY_NEWLINE);
+	if (trx->cfg.freq_offset_khz != 0)
+		vty_out(vty, " freq-offset %f%s", trx->cfg.freq_offset_khz, VTY_NEWLINE);
+	if (!(trx->cfg.rssi_offset == 0 && !trx->cfg.force_rssi_offset))
+		vty_out(vty, " rssi-offset %f%s%s", trx->cfg.rssi_offset,
+			trx->cfg.force_rssi_offset ? " relative": "", VTY_NEWLINE);
 	vty_out(vty, " swap-channels %s%s", trx->cfg.swap_channels ? "enable" : "disable", VTY_NEWLINE);
 	vty_out(vty, " egprs %s%s", trx->cfg.egprs ? "enable" : "disable", VTY_NEWLINE);
 	vty_out(vty, " ext-rach %s%s", trx->cfg.ext_rach ? "enable" : "disable", VTY_NEWLINE);
@@ -579,6 +709,18 @@ static int config_write_trx(struct vty *vty)
 		vty_out(vty, " filler access-burst-delay %u%s", trx->cfg.rach_delay, VTY_NEWLINE);
 	if (trx->cfg.stack_size != 0)
 		vty_out(vty, " stack-size %u%s", trx->cfg.stack_size, VTY_NEWLINE);
+	if (trx->cfg.ul_fn_offset != 0)
+		vty_out(vty, " ul-fn-offset %d%s", trx->cfg.ul_fn_offset, VTY_NEWLINE);
+	if (trx->cfg.overrides.dl_freq_override)
+		vty_out(vty, " dl-freq-override %f%s", trx->cfg.overrides.dl_freq, VTY_NEWLINE);
+	if (trx->cfg.overrides.ul_freq_override)
+		vty_out(vty, " ul-freq-override %f%s", trx->cfg.overrides.ul_freq, VTY_NEWLINE);
+	if (trx->cfg.overrides.dl_gain_override)
+		vty_out(vty, " dl-gain-override %f%s", trx->cfg.overrides.dl_gain, VTY_NEWLINE);
+	if (trx->cfg.overrides.ul_gain_override)
+		vty_out(vty, " ul-gain-override %f%s", trx->cfg.overrides.ul_gain, VTY_NEWLINE);
+	if (trx->cfg.use_va)
+		vty_out(vty, " viterbi-eq %s%s", trx->cfg.use_va ? "enable" : "disable", VTY_NEWLINE);
 	trx_rate_ctr_threshold_write_config(vty, " ");
 
 	for (i = 0; i < trx->cfg.num_chans; i++) {
@@ -639,17 +781,6 @@ DEFUN(show_trx, show_trx_cmd,
 	return CMD_SUCCESS;
 }
 
-static int trx_vty_is_config_node(struct vty *vty, int node)
-{
-	switch (node) {
-	case TRX_NODE:
-	case CHAN_NODE:
-		return 1;
-	default:
-		return 0;
-	}
-}
-
 static int trx_vty_go_parent(struct vty *vty)
 {
 	switch (vty->node) {
@@ -687,7 +818,6 @@ struct vty_app_info g_vty_info = {
 	.version	= PACKAGE_VERSION,
 	.copyright	= trx_copyright,
 	.go_parent_cb	= trx_vty_go_parent,
-	.is_config_node	= trx_vty_is_config_node,
 };
 
 struct trx_ctx *vty_trx_ctx_alloc(void *talloc_ctx)
@@ -700,12 +830,20 @@ struct trx_ctx *vty_trx_ctx_alloc(void *talloc_ctx)
 	trx->cfg.tx_sps = DEFAULT_TX_SPS;
 	trx->cfg.rx_sps = DEFAULT_RX_SPS;
 	trx->cfg.filler = FILLER_ZERO;
+	trx->cfg.rssi_offset = 0.0f;
+	trx->cfg.dev_args = talloc_strdup(trx, "");
 
 	return trx;
 }
 
 int trx_vty_init(struct trx_ctx* trx)
 {
+	cfg_filler_type_cmd.string = vty_cmd_string_from_valstr(trx, filler_types,
+		"filler type (", "|", ")", 0);
+	cfg_filler_type_cmd.doc = vty_cmd_string_from_valstr(trx, filler_docs,
+		CFG_FILLER_DOC_STR "What to do when there is nothing to send "
+		"(filler type, default=zero)\n", "\n", "", 0);
+
 	g_trx_ctx = trx;
 	install_element_ve(&show_trx_cmd);
 
@@ -721,6 +859,7 @@ int trx_vty_init(struct trx_ctx* trx)
 	install_element(TRX_NODE, &cfg_clock_ref_cmd);
 	install_element(TRX_NODE, &cfg_multi_arfcn_cmd);
 	install_element(TRX_NODE, &cfg_offset_cmd);
+	install_element(TRX_NODE, &cfg_freq_offset_cmd);
 	install_element(TRX_NODE, &cfg_rssi_offset_cmd);
 	install_element(TRX_NODE, &cfg_swap_channels_cmd);
 	install_element(TRX_NODE, &cfg_egprs_cmd);
@@ -734,6 +873,12 @@ int trx_vty_init(struct trx_ctx* trx)
 	install_element(TRX_NODE, &cfg_stack_size_cmd);
 
 	install_element(TRX_NODE, &cfg_chan_cmd);
+	install_element(TRX_NODE, &cfg_ul_fn_offset_cmd);
+	install_element(TRX_NODE, &cfg_ul_freq_override_cmd);
+	install_element(TRX_NODE, &cfg_dl_freq_override_cmd);
+	install_element(TRX_NODE, &cfg_ul_gain_override_cmd);
+	install_element(TRX_NODE, &cfg_dl_gain_override_cmd);
+	install_element(TRX_NODE, &cfg_use_viterbi_cmd);
 	install_node(&chan_node, dummy_config_write);
 	install_element(CHAN_NODE, &cfg_chan_rx_path_cmd);
 	install_element(CHAN_NODE, &cfg_chan_tx_path_cmd);

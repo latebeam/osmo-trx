@@ -12,10 +12,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
 #ifdef HAVE_CONFIG_H
@@ -55,6 +51,7 @@ extern "C" {
 #include <osmocom/ctrl/control_if.h>
 #include <osmocom/vty/stats.h>
 #include <osmocom/vty/command.h>
+#include <osmocom/vty/cpu_sched_vty.h>
 
 #include "convolve.h"
 #include "convert.h"
@@ -80,6 +77,24 @@ static struct ctrl_handle *g_ctrlh;
 static RadioDevice *usrp;
 static RadioInterface *radio;
 
+/* adjusts read timestamp offset to make the viterbi equalizer happy by including the start tail bits */
+template <typename B>
+class rif_va_wrapper : public B {
+	bool use_va;
+
+    public:
+	template <typename... Args>
+	rif_va_wrapper(bool use_va, Args &&...args) : B(std::forward<Args>(args)...), use_va(use_va)
+	{
+	}
+	bool start() override
+	{
+		auto rv = B::start();
+		B::readTimestamp -= use_va ? 20 : 0;
+		return rv;
+	};
+};
+
 /* Create radio interface
  *     The interface consists of sample rate changes, frequency shifts,
  *     channel multiplexing, and other conversions. The transceiver core
@@ -94,17 +109,17 @@ RadioInterface *makeRadioInterface(struct trx_ctx *trx,
 
 	switch (type) {
 	case RadioDevice::NORMAL:
-		radio = new RadioInterface(usrp, trx->cfg.tx_sps,
-					   trx->cfg.rx_sps, trx->cfg.num_chans);
+		radio = new rif_va_wrapper<RadioInterface>(trx->cfg.use_va, usrp, trx->cfg.tx_sps, trx->cfg.rx_sps,
+							   trx->cfg.num_chans);
 		break;
 	case RadioDevice::RESAMP_64M:
 	case RadioDevice::RESAMP_100M:
-		radio = new RadioInterfaceResamp(usrp, trx->cfg.tx_sps,
-						 trx->cfg.rx_sps);
+		radio = new rif_va_wrapper<RadioInterfaceResamp>(trx->cfg.use_va, usrp, trx->cfg.tx_sps,
+								 trx->cfg.rx_sps);
 		break;
 	case RadioDevice::MULTI_ARFCN:
-		radio = new RadioInterfaceMulti(usrp, trx->cfg.tx_sps,
-						trx->cfg.rx_sps, trx->cfg.num_chans);
+		radio = new rif_va_wrapper<RadioInterfaceMulti>(trx->cfg.use_va, usrp, trx->cfg.tx_sps, trx->cfg.rx_sps,
+								trx->cfg.num_chans);
 		break;
 	default:
 		LOG(ALERT) << "Unsupported radio interface configuration";
@@ -143,12 +158,8 @@ int makeTransceiver(struct trx_ctx *trx, RadioInterface *radio)
 {
 	VectorFIFO *fifo;
 
-	transceiver = new Transceiver(trx->cfg.base_port, trx->cfg.bind_addr,
-			      trx->cfg.remote_addr, trx->cfg.tx_sps,
-			      trx->cfg.rx_sps, trx->cfg.num_chans, GSM::Time(3,0),
-			      radio, trx->cfg.rssi_offset, trx->cfg.stack_size);
-	if (!transceiver->init(trx->cfg.filler, trx->cfg.rtsc,
-		       trx->cfg.rach_delay, trx->cfg.egprs, trx->cfg.ext_rach)) {
+	transceiver = new Transceiver(&trx->cfg, GSM::Time(3,0), radio);
+	if (!transceiver->init()) {
 		LOG(ALERT) << "Failed to initialize transceiver";
 		return -1;
 	}
@@ -180,6 +191,17 @@ static void sig_handler(int signo)
 		gshutdown = true;
 		break;
 	case SIGABRT:
+		/* in case of abort, we want to obtain a talloc report and
+		 * then run default SIGABRT handler, who will generate coredump
+		 * and abort the process. abort() should do this for us after we
+		 * return, but program wouldn't exit if an external SIGABRT is
+		 * received.
+		 */
+		talloc_report(tall_trx_ctx, stderr);
+		talloc_report_full(tall_trx_ctx, stderr);
+		signal(SIGABRT, SIG_DFL);
+		raise(SIGABRT);
+		break;
 	case SIGUSR1:
 		talloc_report(tall_trx_ctx, stderr);
 		talloc_report_full(tall_trx_ctx, stderr);
@@ -245,10 +267,13 @@ static void setup_signal_handlers()
 
 static void print_help()
 {
-	fprintf(stdout, "Options:\n"
-		"  -h, --help      This text\n"
-		"  -C, --config    Filename The config file to use\n"
-		"  -V, --version   Print the version of OsmoTRX\n"
+	printf( "Some useful options:\n"
+		"  -h, --help			This text\n"
+		"  -C, --config			Filename The config file to use\n"
+		"  -V, --version		Print the version of OsmoTRX\n"
+		"\nVTY reference generation:\n"
+		"      --vty-ref-mode MODE	VTY reference generation mode (e.g. 'expert').\n"
+		"      --vty-ref-xml		Generate the VTY reference XML output and exit.\n"
 		);
 }
 
@@ -259,16 +284,44 @@ static void print_deprecated(char opt)
 		<< " All cmd line options are already being overridden by VTY options if set.";
 }
 
+static void handle_long_options(const char *prog_name, const int long_option)
+{
+	static int vty_ref_mode = VTY_REF_GEN_MODE_DEFAULT;
+
+	switch (long_option) {
+	case 1:
+		vty_ref_mode = get_string_value(vty_ref_gen_mode_names, optarg);
+		if (vty_ref_mode < 0) {
+			fprintf(stderr, "%s: Unknown VTY reference generation "
+				"mode '%s'\n", prog_name, optarg);
+			exit(2);
+		}
+		break;
+	case 2:
+		fprintf(stderr, "Generating the VTY reference in mode '%s' (%s)\n",
+			get_value_string(vty_ref_gen_mode_names, vty_ref_mode),
+			get_value_string(vty_ref_gen_mode_desc, vty_ref_mode));
+		vty_dump_xml_ref_mode(stdout, (enum vty_ref_gen_mode) vty_ref_mode);
+		exit(0);
+	default:
+		fprintf(stderr, "%s: error parsing cmdline options\n", prog_name);
+		exit(2);
+	}
+}
+
 static void handle_options(int argc, char **argv, struct trx_ctx* trx)
 {
 	int option;
 	unsigned int i;
 	std::vector<std::string> rx_paths, tx_paths;
 	bool rx_paths_set = false, tx_paths_set = false;
+	static int long_option = 0;
 	static struct option long_options[] = {
 		{"help", 0, 0, 'h'},
 		{"config", 1, 0, 'C'},
 		{"version", 0, 0, 'V'},
+		{"vty-ref-mode", 1, &long_option, 1},
+		{"vty-ref-xml", 0, &long_option, 2},
 		{NULL, 0, 0, 0}
 	};
 
@@ -278,6 +331,9 @@ static void handle_options(int argc, char **argv, struct trx_ctx* trx)
 		case 'h':
 			print_help();
 			exit(0);
+			break;
+		case 0:
+			handle_long_options(argv[0], long_option);
 			break;
 		case 'a':
 			print_deprecated(option);
@@ -345,6 +401,7 @@ static void handle_options(int argc, char **argv, struct trx_ctx* trx)
 		case 'R':
 			print_deprecated(option);
 			trx->cfg.rssi_offset = atof(optarg);
+			trx->cfg.force_rssi_offset = true;
 			break;
 		case 'S':
 			print_deprecated(option);
@@ -426,6 +483,12 @@ int trx_validate_config(struct trx_ctx *trx)
 		return -1;
 	}
 
+	if (trx->cfg.use_va &&
+	    (trx->cfg.egprs || trx->cfg.multi_arfcn || trx->cfg.tx_sps != 4 || trx->cfg.rx_sps != 4)) {
+		LOG(ERROR) << "Viterbi equalizer only works for gmsk with 4 tx/rx samples per symbol!";
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -435,13 +498,47 @@ static int set_sched_rr(unsigned int prio)
 	int rc;
 	memset(&param, 0, sizeof(param));
 	param.sched_priority = prio;
-	LOG(INFO) << "Setting SCHED_RR priority " << param.sched_priority;
+	LOG(INFO) << "Setting SCHED_RR priority " << param.sched_priority
+		  << ". This setting is DEPRECATED, please use 'policy rr " << param.sched_priority
+		  << "' under the 'sched' VTY node instead.";
 	rc = sched_setscheduler(getpid(), SCHED_RR, &param);
 	if (rc != 0) {
 		LOG(ERROR) << "Config: Setting SCHED_RR failed";
 		return -1;
 	}
 	return 0;
+}
+
+static void print_simd_info(void)
+{
+#ifdef HAVE_SSE3
+	LOGP(DMAIN, LOGL_INFO, "SSE3 support compiled in");
+#ifdef HAVE___BUILTIN_CPU_SUPPORTS
+	if (__builtin_cpu_supports("sse3"))
+		LOGPC(DMAIN, LOGL_INFO, " and supported by CPU\n");
+	else
+		LOGPC(DMAIN, LOGL_INFO, ", but not supported by CPU\n");
+#else
+	LOGPC(DMAIN, LOGL_INFO, ", but runtime SIMD detection disabled\n");
+#endif
+#endif
+
+#ifdef HAVE_SSE4_1
+	LOGP(DMAIN, LOGL_INFO, "SSE4.1 support compiled in");
+#ifdef HAVE___BUILTIN_CPU_SUPPORTS
+	if (__builtin_cpu_supports("sse4.1"))
+		LOGPC(DMAIN, LOGL_INFO, " and supported by CPU\n");
+	else
+		LOGPC(DMAIN, LOGL_INFO, ", but not supported by CPU\n");
+#else
+	LOGPC(DMAIN, LOGL_INFO, ", but runtime SIMD detection disabled\n");
+#endif
+#endif
+
+#ifndef HAVE_ATOMIC_OPS
+#pragma message ("Built without atomic operation support. Using Mutex, it may affect performance!")
+	LOG(NOTICE) << "Built without atomic operation support. Using Mutex, it may affect performance!";
+#endif
 }
 
 static void print_config(struct trx_ctx *trx)
@@ -465,8 +562,10 @@ static void print_config(struct trx_ctx *trx)
 	ost << "   Filler Burst TSC........ " << trx->cfg.rtsc << std::endl;
 	ost << "   Filler Burst RACH Delay. " << trx->cfg.rach_delay << std::endl;
 	ost << "   Multi-Carrier........... " << trx->cfg.multi_arfcn << std::endl;
-	ost << "   Tuning offset........... " << trx->cfg.offset << std::endl;
-	ost << "   RSSI to dBm offset...... " << trx->cfg.rssi_offset << std::endl;
+	ost << "   LO freq. offset......... " << trx->cfg.offset << std::endl;
+	if (trx->cfg.freq_offset_khz != 0)
+		ost << "   Tune freq. offset....... " << trx->cfg.freq_offset_khz << std::endl;
+	ost << "   RSSI to dBm offset...... " << trx->cfg.rssi_offset << (trx->cfg.force_rssi_offset ? "" : " (relative)") << std::endl;
 	ost << "   Swap channels........... " << trx->cfg.swap_channels << std::endl;
 	ost << "   Tx Antennas.............";
 	for (i = 0; i < trx->cfg.num_chans; i++) {
@@ -496,24 +595,14 @@ static void trx_stop()
 static int trx_start(struct trx_ctx *trx)
 {
 	int type, chans;
-	unsigned int i;
-	std::vector<std::string> rx_paths, tx_paths;
 	RadioDevice::InterfaceType iface = RadioDevice::NORMAL;
 
 	/* Create the low level device object */
 	if (trx->cfg.multi_arfcn)
 		iface = RadioDevice::MULTI_ARFCN;
 
-	/* Generate vector of rx/tx_path: */
-	for (i = 0; i < trx->cfg.num_chans; i++) {
-		rx_paths.push_back(charp2str(trx->cfg.chans[i].rx_path));
-		tx_paths.push_back(charp2str(trx->cfg.chans[i].tx_path));
-	}
-
-	usrp = RadioDevice::make(trx->cfg.tx_sps, trx->cfg.rx_sps, iface,
-				 trx->cfg.num_chans, trx->cfg.offset,
-				 tx_paths, rx_paths);
-	type = usrp->open(charp2str(trx->cfg.dev_args), trx->cfg.clock_ref, trx->cfg.swap_channels);
+	usrp = RadioDevice::make(iface, &trx->cfg);
+	type = usrp->open();
 	if (type < 0) {
 		LOG(ALERT) << "Failed to create radio device" << std::endl;
 		goto shutdown;
@@ -551,44 +640,17 @@ int main(int argc, char *argv[])
 
 	g_trx_ctx = vty_trx_ctx_alloc(tall_trx_ctx);
 
-#ifdef HAVE_SSE3
-	printf("Info: SSE3 support compiled in");
-#ifdef HAVE___BUILTIN_CPU_SUPPORTS
-	if (__builtin_cpu_supports("sse3"))
-		printf(" and supported by CPU\n");
-	else
-		printf(", but not supported by CPU\n");
-#else
-	printf(", but runtime SIMD detection disabled\n");
-#endif
-#endif
-
-#ifdef HAVE_SSE4_1
-	printf("Info: SSE4.1 support compiled in");
-#ifdef HAVE___BUILTIN_CPU_SUPPORTS
-	if (__builtin_cpu_supports("sse4.1"))
-		printf(" and supported by CPU\n");
-	else
-		printf(", but not supported by CPU\n");
-#else
-	printf(", but runtime SIMD detection disabled\n");
-#endif
-#endif
-
-#ifndef HAVE_ATOMIC_OPS
-#pragma message ("Built without atomic operation support. Using Mutex, it may affect performance!")
-	printf("Built without atomic operation support. Using Mutex, it may affect performance!\n");
-#endif
-
 	convolve_init();
 	convert_init();
 
 	osmo_init_logging2(tall_trx_ctx, &log_info);
 	log_enable_multithread();
+	log_cache_enable();
 	osmo_stats_init(tall_trx_ctx);
 	vty_init(&g_vty_info);
 	logging_vty_add_cmds();
 	ctrl_vty_init(tall_trx_ctx);
+	osmo_cpu_sched_vty_init(tall_trx_ctx);
 	trx_vty_init(g_trx_ctx);
 
 	osmo_talloc_vty_add_cmds();
@@ -604,11 +666,11 @@ int main(int argc, char *argv[])
 		exit(2);
 	}
 
-	rc = telnet_init_dynif(tall_trx_ctx, NULL, vty_get_bind_addr(), OSMO_VTY_PORT_TRX);
+	rc = telnet_init_default(tall_trx_ctx, NULL, OSMO_VTY_PORT_TRX);
 	if (rc < 0)
 		exit(1);
 
-	g_ctrlh = ctrl_interface_setup_dynip(NULL, ctrl_vty_get_bind_addr(), OSMO_CTRL_PORT_TRX, NULL);
+	g_ctrlh = ctrl_interface_setup(NULL, OSMO_CTRL_PORT_TRX, NULL);
 	if (!g_ctrlh) {
 		LOG(ERROR) << "Failed to create CTRL interface.\n";
 		exit(1);
@@ -625,6 +687,7 @@ int main(int argc, char *argv[])
 			" but expect your config to break in the future.";
 	}
 
+	print_simd_info();
 	print_config(g_trx_ctx);
 
 	if (trx_validate_config(g_trx_ctx) < 0) {

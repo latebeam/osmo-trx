@@ -26,22 +26,36 @@ AM_CXXFLAGS = -Wall -pthread
 #AM_CXXFLAGS = -Wall -O2 -NDEBUG -pthread
 #AM_CFLAGS = -Wall -O2 -NDEBUG -pthread
 
+SUBDIRS =
+
+if ENABLE_MS_TRX
+SUBDIRS += $(LIBTRXCON_DIR)
+endif
+
 # Order must be preserved
-SUBDIRS = \
-	doc \
+SUBDIRS += \
 	CommonLibs \
 	GSM \
 	Transceiver52M \
 	contrib \
 	tests \
-	utils
+	utils \
+	doc \
+	$(NULL)
+
+BUILT_SOURCES = $(top_srcdir)/.version
+$(top_srcdir)/.version:
+	echo $(VERSION) > $@-t && mv $@-t $@
+dist-hook:
+	echo $(VERSION) > $(distdir)/.tarball-version
 
 EXTRA_DIST = \
+	.version \
 	LEGAL \
 	COPYING \
 	README.md \
-	contrib/osmo-trx.spec.in \
 	debian \
+	git-version-gen \
 	$(NULL)
 
 AM_DISTCHECK_CONFIGURE_FLAGS = \

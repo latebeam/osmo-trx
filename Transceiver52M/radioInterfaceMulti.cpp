@@ -38,13 +38,15 @@ extern "C" {
 /* Universal resampling parameters */
 #define NUMCHUNKS				24
 
+/* number of narrow-band virtual ARFCNs in this wide-band multi-ARFCN device */
 #define MCHANS					4
 
 RadioInterfaceMulti::RadioInterfaceMulti(RadioDevice *radio, size_t tx_sps,
 					 size_t rx_sps, size_t chans)
 	: RadioInterface(radio, tx_sps, rx_sps, chans),
-	  outerSendBuffer(NULL), outerRecvBuffer(NULL),
-	  dnsampler(NULL), upsampler(NULL), channelizer(NULL), synthesis(NULL)
+	  outerSendBuffer(NULL), outerRecvBuffer(NULL), history(mChans), active(MCHANS, false),
+	  rx_freq_state(mChans), tx_freq_state(mChans), dnsampler(NULL), upsampler(NULL), channelizer(NULL),
+	  synthesis(NULL)
 {
 }
 
@@ -69,16 +71,24 @@ void RadioInterfaceMulti::close()
 	channelizer = NULL;
 	synthesis = NULL;
 
-	mReceiveFIFO.resize(0);
-	powerScaling.resize(0);
-	history.resize(0);
-	active.resize(0);
-	rx_freq_state.resize(0);
-	tx_freq_state.resize(0);
+
+	for (std::vector<signalVector*>::iterator it = history.begin(); it != history.end(); ++it)
+		delete *it;
+
+	mReceiveFIFO.clear();
+	powerScaling.clear();
+	history.clear();
+	active.clear();
+	rx_freq_state.clear();
+	tx_freq_state.clear();
 
 	RadioInterface::close();
 }
 
+/*! we re-map the physical channels from the filter bank to logical per-TRX channels
+ *  \param[in] pchan physical channel number within the channelizer
+ *  \param[in] chans total number of narrow-band ARFCN channels
+ *  \returns logical (TRX) channel number, or -1 in case there is none */
 static int getLogicalChan(size_t pchan, size_t chans)
 {
 	switch (chans) {
@@ -113,6 +123,9 @@ static int getLogicalChan(size_t pchan, size_t chans)
 	return -1;
 }
 
+/*! do we need to frequency shift our spectrum or not?
+ *  \param chans total number of channels
+ *  \returns 1 if we need to shift; 0 if not; -1 on error */
 static int getFreqShift(size_t chans)
 {
 	switch (chans) {
@@ -140,20 +153,10 @@ bool RadioInterfaceMulti::init(int type)
 		return false;
 	}
 
-	close();
-
-	sendBuffer.resize(mChans);
-	recvBuffer.resize(mChans);
 	convertSendBuffer.resize(1);
 	convertRecvBuffer.resize(1);
 
-	mReceiveFIFO.resize(mChans);
-	powerScaling.resize(mChans);
-	history.resize(mChans);
-	rx_freq_state.resize(mChans);
-	tx_freq_state.resize(mChans);
-	active.resize(MCHANS, false);
-
+	/* 4 == sps */
 	inchunk = RESAMP_INRATE * 4;
 	outchunk = RESAMP_OUTRATE * 4;
 
@@ -431,14 +434,18 @@ bool RadioInterfaceMulti::tuneRx(double freq, size_t chan)
 
 double RadioInterfaceMulti::setRxGain(double db, size_t chan)
 {
-  if (chan == 0)
-    return mDevice->setRxGain(db);
-  else
-    return mDevice->getRxGain();
+	if (chan == 0)
+		return mDevice->setRxGain(db);
+	else
+		return mDevice->getRxGain();
+}
+
+double RadioInterfaceMulti::rssiOffset(size_t chan)
+{
+	return mDevice->rssiOffset(0);
 }
 
 int RadioInterfaceMulti::setPowerAttenuation(int atten, size_t chan)
 {
-		return RadioInterface::setPowerAttenuation(atten, 0);
-
+	return RadioInterface::setPowerAttenuation(atten, 0);
 }
