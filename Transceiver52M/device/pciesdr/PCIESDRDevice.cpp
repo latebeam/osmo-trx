@@ -54,6 +54,12 @@ using namespace std;
 /* Size of Rx / Tx timestamp based Ring buffer, in bytes */
 #define SAMPLE_BUF_SZ (1 << 20)
 
+#define WAIT_TX_GAIN_TIME 7
+std::chrono::steady_clock::time_point global_start_time;
+bool waiting_tx_gain = false;
+double saved_tx_gain_dB = 0.0;
+size_t saved_tx_gain_chan = 0;
+
 /* greatest common divisor */
 static long gcd(long a, long b)
 {
@@ -68,10 +74,8 @@ static long gcd(long a, long b)
 		return gcd(b, a % b);
 }
 
-PCIESDRDevice::PCIESDRDevice(size_t tx_sps, size_t rx_sps, InterfaceType iface, size_t chan_num, double lo_offset,
-		             const std::vector<std::string>& tx_paths,
-		             const std::vector<std::string>& rx_paths):
-	RadioDevice(tx_sps, rx_sps, iface, chan_num, lo_offset, tx_paths, rx_paths)
+PCIESDRDevice::PCIESDRDevice(InterfaceType iface, const struct trx_cfg *cfg):
+	RadioDevice(iface, cfg)
 {
 	LOGC(DDEV, INFO) << "creating PCIESDR device...";
 
@@ -118,16 +122,17 @@ static int parse_config(const char* line, const char* argument, int default_valu
 	return res;
 }
 
-int PCIESDRDevice::open(const std::string &args, int ref, bool swap_channels)
+
+int PCIESDRDevice::open()
 {
-	int lb_param = parse_config(args.c_str(), "loopback", 0);
+	int lb_param = parse_config(cfg->dev_args, "loopback", 0);
 	char pciesdr_name[500];
-	const char* lend = strchr(args.c_str(), ',');
-	int len = (lend) ? (lend - args.c_str()) : sizeof(pciesdr_name) - 1;
+	const char* lend = strchr(cfg->dev_args, ',');
+	int len = (lend) ? (lend - cfg->dev_args) : sizeof(pciesdr_name) - 1;
 
 	LOGC(DDEV, INFO) << "Opening PCIESDR device..";
 
-	strncpy(pciesdr_name, args.c_str(), len);
+	strncpy(pciesdr_name, cfg->dev_args, len);
 	pciesdr_name[len] = 0;
 	started = false;
 
@@ -140,14 +145,31 @@ int PCIESDRDevice::open(const std::string &args, int ref, bool swap_channels)
 		LOGC(DDEV, ERROR) << "PCIESDR creating failed, device " << pciesdr_name << "";
 		return -1;
 	}
+	LOGC(DDEV, INFO) << "PCIESDR after msdr_open";
 
-	msdr_set_default_start_params(device, &StartParams);
+	msdr_set_default_start_params(device, &StartParams, sizeof(*&StartParams), 1, 1, 1);
+
+	LOGC(DDEV, INFO) << "PCIESDR after msdr_set_default_start_params";
 	/* RF interface */
-	StartParams.interface_type = SDR_INTERFACE_RF;
+	//StartParams.interface_type = SDR_INTERFACE_RF;
 	/* no time synchronisation */
-	StartParams.sync_source = SDR_SYNC_NONE;
+	//StartParams.sync_source = SDR_SYNC_NONE;
 	/* sync on internal PPS */
-	//StartParams.sync_source = SDR_SYNC_INTERNAL;
+	
+	StartParams.sync_all = 1;
+	StartParams.flags1 = 1;
+	StartParams.flags2 = 1;
+	StartParams.flags3 = 1;
+
+	StartParams.arm_cache_mode = SDR_ARM_CACHE_USER;
+
+	LOGC(DDEV, INFO) << "PCIESDR after sync all & flags1-3 & sync all & arm_cache_mode";
+
+	StartParams.sync_source = SDR_SYNC_INTERNAL;
+	LOGC(DDEV, INFO) << "PCIESDR after sync_source";
+
+	StartParams.clock_source = SDR_CLOCK_INTERNAL;
+	LOGC(DDEV, INFO) << "PCIESDR after clock_source";
 
 	/* calculate sample rate using Euclidean algorithm */
 	double rate = (double)GSMRATE*tx_sps;
@@ -158,18 +180,31 @@ int PCIESDRDevice::open(const std::string &args, int ref, bool swap_channels)
 	long gcd_ = gcd(round(frac * precision), precision);
 	long denominator = precision / gcd_;
 	long numerator = round(frac * precision) / gcd_;
-	StartParams.sample_rate_num[0] = (int64_t)(integral * denominator + numerator);
-	StartParams.sample_rate_den[0] = (int64_t)denominator;
+
+	LOGC(DDEV, INFO) << "PCIESDR after numerator";
+
+
+	StartParams.sample_rate_num[0] = rate;
+	LOGC(DDEV, INFO) << "PCIESDR after sample_rate_num";
+
+	StartParams.sample_rate_den[0] = 1;
+	LOGC(DDEV, INFO) << "PCIESDR after sample_rate_den";
 	actualSampleRate = (double)StartParams.sample_rate_num[0] / (double)StartParams.sample_rate_den[0];
+	LOGC(DDEV, INFO) << "PCIESDR after actualSampleRate";
+
 	StartParams.rx_bandwidth[0] = actualSampleRate * 0.75;
+	LOGC(DDEV, INFO) << "PCIESDR after rx_bandwidth";
+
 	StartParams.tx_bandwidth[0] = actualSampleRate * 0.75;
+	LOGC(DDEV, INFO) << "PCIESDR after tx_bandwidth";
+
 	LOGC(DDEV, INFO) << "PCIESDR device txsps:" << tx_sps << " rxsps:" << rx_sps
 		         << " GSMRATE * tx_sps:" << (double)GSMRATE * tx_sps;
 	LOGC(DDEV, INFO) << "PCIESDR sample_rate_num:" << StartParams.sample_rate_num[0]
 		         << " sample_rate_den:" << StartParams.sample_rate_den[0]
 		         << " BW:" << StartParams.rx_bandwidth[0];
 
-	switch (ref) {
+	switch (cfg->clock_ref) {
 	case REF_INTERNAL:
 		LOGC(DDEV, INFO) << "Setting Internal clock reference";
 		/* internal clock, using PPS to correct it */
@@ -190,7 +225,7 @@ int PCIESDRDevice::open(const std::string &args, int ref, bool swap_channels)
 	StartParams.rx_freq[0] = 1550e6;
 	StartParams.tx_freq[0] = 1500e6;
 	StartParams.rx_gain[0] = 60;
-	StartParams.tx_gain[0] = 40;
+	StartParams.tx_gain[0] = 0;
 	StartParams.rx_antenna[0] = SDR_RX_ANTENNA_RX;
 	StartParams.rf_port_count = 1;
 	StartParams.tx_port_channel_count[0] = 1;
@@ -200,11 +235,15 @@ int PCIESDRDevice::open(const std::string &args, int ref, bool swap_channels)
 	/* in samples */
 	StartParams.dma_buffer_len = dma_buffer_len;
 
+
+
+
 	/* FIXME: estimate it properly */
 	/* PCIe radio should have this close to zero */
 	/* The MS can connect if the value is between -30 and +5 */
-	ts_offset = -16;
-
+	ts_offset = static_cast<TIMESTAMP>(0.0e-5 * GSMRATE * tx_sps); /* time * sample_rate */
+	//ts_offset = -16;
+	
 	started = false;
 	return NORMAL;
 
@@ -216,8 +255,16 @@ out_close:
 	return -1;
 }
 
+double PCIESDRDevice::rssiOffset(size_t chan)
+{
+	return 0.0;
+}
+
 bool PCIESDRDevice::start()
 {
+	global_start_time = std::chrono::steady_clock::now();
+	waiting_tx_gain = true;
+	
 	SDRStats stats;
 	int res;
 
@@ -228,7 +275,46 @@ bool PCIESDRDevice::start()
 		return false;
 	}
 	LOGC(DDEV, INFO) << "starting PCIESDR..., sample rate:" << actualSampleRate;
-	res = msdr_start(device, &StartParams);
+		LOGC(DDEV, INFO) << "starting PCIESDR..., sample rate:" << actualSampleRate;
+		LOGC(DDEV, INFO) << "***************************************" ;
+		LOGC(DDEV, INFO) << "PCIESDR device txsps:" << tx_sps << " rxsps:" << rx_sps << " GSMRATE * tx_sps:" << (double)GSMRATE * tx_sps;
+		LOGC(DDEV, INFO) << "PCIESDR clock source:" << StartParams.clock_source;
+		LOGC(DDEV, INFO) << "PCIESDR sync source:" << StartParams.sync_source;
+		LOGC(DDEV, INFO) << "PCIESDR sample_rate_num:" << StartParams.sample_rate_num[0];
+		LOGC(DDEV, INFO) << "PCIESDR sample_rate_den:" << StartParams.sample_rate_den[0];
+		LOGC(DDEV, INFO) << "PCIESDR rx_sample_fmt:" << StartParams.rx_sample_fmt;
+		LOGC(DDEV, INFO) << "PCIESDR tx_sample_fmt:" << StartParams.tx_sample_fmt;
+		LOGC(DDEV, INFO) << "PCIESDR rx_sample_hw_fmt:" << StartParams.rx_sample_hw_fmt;
+		LOGC(DDEV, INFO) << "PCIESDR tx_sample_hw_fmt:" << StartParams.tx_sample_hw_fmt;
+		LOGC(DDEV, INFO) << "PCIESDR rx_channel_count:" << StartParams.rx_channel_count;
+		LOGC(DDEV, INFO) << "PCIESDR tx_channel_count:" << StartParams.tx_channel_count;
+		LOGC(DDEV, INFO) << "PCIESDR rx_freq:" << StartParams.rx_freq[0];
+		LOGC(DDEV, INFO) << "PCIESDR tx_freq:" << StartParams.tx_freq[0];
+		LOGC(DDEV, INFO) << "PCIESDR rx_gain:" << StartParams.rx_gain[0];
+		LOGC(DDEV, INFO) << "PCIESDR tx_freq:" << StartParams.tx_freq[0];
+		LOGC(DDEV, INFO) << "PCIESDR rx_antenna:" << StartParams.rx_antenna;
+		LOGC(DDEV, INFO) << "PCIESDR rf_port_count:" << StartParams.rf_port_count;
+		LOGC(DDEV, INFO) << "PCIESDR tx_bandwidth:" << StartParams.tx_bandwidth;
+		LOGC(DDEV, INFO) << "PCIESDR tx_port_channel_count:" << StartParams.tx_port_channel_count;
+		LOGC(DDEV, INFO) << "PCIESDR rx_port_channel_count:" << StartParams.rx_port_channel_count;
+		LOGC(DDEV, INFO) << "PCIESDR dma_buffer_count:" << StartParams.dma_buffer_count;
+		LOGC(DDEV, INFO) << "PCIESDR dma_buffer_len:" << StartParams.dma_buffer_len;
+		LOGC(DDEV, INFO) << "PCIESDR rx_latency:" << StartParams.rx_latency;
+		LOGC(DDEV, INFO) << "PCIESDR config_script:" << StartParams.config_script;
+		LOGC(DDEV, INFO) << "PCIESDR config_script_params:" << StartParams.config_script_params;
+		LOGC(DDEV, INFO) << "PCIESDR tx_delay:" << StartParams.tx_delay;
+		LOGC(DDEV, INFO) << "PCIESDR rx_delay:" << StartParams.rx_delay;
+		LOGC(DDEV, INFO) << "PCIESDR sdr_count:" << StartParams.sdr_count;
+		LOGC(DDEV, INFO) << "PCIESDR SpecialStartParams." << StartParams.spt;
+		LOGC(DDEV, INFO) << "***************************************" ;
+
+
+	res = msdr_set_start_params(device, &StartParams, sizeof(*&StartParams));
+	if (res) {
+		LOGC(DDEV, ERROR) << "msdr_set_start_params failed:"<< res;
+		return false;
+	}
+	res = msdr_start(device);
 	if (res) {
 		LOGC(DDEV, ERROR) << "msdr_start failed:"<< res;
 		return false;
@@ -273,7 +359,7 @@ double PCIESDRDevice::maxTxGain()
 
 double PCIESDRDevice::maxRxGain()
 {
-	return 50;
+	return 60;
 }
 
 double PCIESDRDevice::minRxGain()
@@ -295,12 +381,31 @@ double PCIESDRDevice::setTxGain(double dB, size_t chan)
 {
 	int res = 0;
 
+	if (waiting_tx_gain)
+	{
+		saved_tx_gain_dB = dB;
+		saved_tx_gain_chan = chan;
+		if (started) {
+			res = msdr_set_tx_gain(device, chan, 0);
+			if (res) {
+				LOGC(DDEV, INFO) << "Error setting TX gain res: " << res;
+			}
+		}
+		return dB;
+	}
+
 	if (chan) {
 		LOGC(DDEV, ERROR) << "Invalid channel " << chan;
 		return 0.0;
 	}
 
 	LOGC(DDEV, INFO) << "Setting TX gain to " << dB << " dB. device:" << device << " chan:" << chan;
+	dB = dB - 25.0;
+
+	if (dB < 0) {
+		LOGC(DDEV, ERROR) << "Invalid dB: " << dB;
+		return 0.0;
+	}
 	StartParams.tx_gain[chan] = dB;
 
 	if (started) {
@@ -327,7 +432,6 @@ double PCIESDRDevice::getPowerAttenuation(size_t chan) {
 double PCIESDRDevice::setRxGain(double dB, size_t chan)
 {
 	int res = 0;
-
 	if (chan) {
 		LOGC(DDEV, ERROR) << "Invalid channel " << chan;
 		return 0.0;
@@ -362,12 +466,12 @@ bool PCIESDRDevice::flush_recv()
 	int64_t timestamp_tmp;
 	int expect_smpls = sizeof(samples) / sizeof(samples[0]);
 	int rc;
-
+	MultiSDRReadMetadata md;
 	LOGC(DDEV, INFO) << "PCIESDRDevice flush";
 
 	psamples = &samples[0];
 
-	while ((rc = msdr_read(device, &timestamp_tmp, (void**)&psamples, expect_smpls, chan, 100)) > 1) {
+	while ((rc = msdr_read(device, &timestamp_tmp, (void**)&psamples, expect_smpls, chan, &md)) > 1) {
 		if (rc < (int)expect_smpls)
 			break;
 	}
@@ -375,9 +479,7 @@ bool PCIESDRDevice::flush_recv()
 		return false;
 
 	ts_initial = (TIMESTAMP)timestamp_tmp + rc;
-
-	LOGC(DDEV, INFO) << "Initial timestamp " << ts_initial << std::endl;
-
+	
 	return true;
 }
 
@@ -392,6 +494,11 @@ int PCIESDRDevice::readSamples(std::vector <short *> &bufs, int len, bool *overr
 	static sample_t samples[PSAMPLES_NUM];
 	static sample_t *psamples;
 	int64_t timestamp_tmp;
+	MultiSDRReadMetadata md;
+	md.timeout_ms = 1000;
+	
+	if (waiting_tx_gain)
+		memset(&samples, 0, sizeof(samples));
 #ifndef LIBSDR_HAS_MSDR_CONVERT
 	float powerScaling[] = {1, 1, 1, 1};
 #endif
@@ -423,6 +530,7 @@ int PCIESDRDevice::readSamples(std::vector <short *> &bufs, int len, bool *overr
 	}
 
 	for (i = 0; i < chans; i++) {
+
 		/* Receive samples from HW until we have enough */
 		while ((avail_smpls = rx_buffers[i]->avail_smpls(timestamp)) < len) {
 			expect_smpls = len - avail_smpls;
@@ -430,7 +538,8 @@ int PCIESDRDevice::readSamples(std::vector <short *> &bufs, int len, bool *overr
 			expect_timestamp = timestamp + avail_smpls;
 			timestamp_tmp = 0;
 			psamples = &samples[0];
-			num_smpls = msdr_read(device, &timestamp_tmp, (void**)&psamples, expect_smpls, i, 100);
+
+			num_smpls = msdr_read(device, &timestamp_tmp, (void**)&psamples, expect_smpls, i, &md);
 			if (num_smpls < 0) {
 				LOGC(DDEV, ERROR) << "PCIESDR readSamples msdr_read failed num_smpls " << num_smpls
 					   << " device: " << device
@@ -474,6 +583,7 @@ int PCIESDRDevice::readSamples(std::vector <short *> &bufs, int len, bool *overr
 	/* We have enough samples */
 	for (size_t i = 0; i < rx_buffers.size(); i++) {
 		rc = rx_buffers[i]->read(bufs[i], len, timestamp);
+
 		if ((rc < 0) || (rc != len)) {
 			LOGCHAN(i, DDEV, ERROR) << rx_buffers[i]->str_code(rc) << ". "
 				                << rx_buffers[i]->str_status(timestamp)
@@ -488,6 +598,17 @@ int PCIESDRDevice::readSamples(std::vector <short *> &bufs, int len, bool *overr
 int PCIESDRDevice::writeSamples(std::vector<short *> &bufs, int len,
                                 bool *underrun, unsigned long long timestamp)
 {
+	if (waiting_tx_gain)
+	{
+		auto now = std::chrono::steady_clock::now();
+		auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - global_start_time);
+		if (elapsed.count() > WAIT_TX_GAIN_TIME_SEC)
+		{
+			waiting_tx_gain = false;
+			setTxGain(saved_tx_gain_dB, saved_tx_gain_chan);
+		}
+	}
+
 	int rc = 0;
 	unsigned int i;
 	static sample_t samples[PSAMPLES_NUM];
@@ -495,7 +616,7 @@ int PCIESDRDevice::writeSamples(std::vector<short *> &bufs, int len,
 	int64_t hw_time;
 	int64_t timestamp_tmp;
 	SDRStats stats;
-
+	MultiSDRWriteMetadata md;
 	if (!started)
 		return -1;
 
@@ -518,12 +639,15 @@ int PCIESDRDevice::writeSamples(std::vector<short *> &bufs, int len,
 		LOGCHAN(i, DDEV, DEBUG) << "send buffer of len " << len << " timestamp " << std::hex << timestamp_tmp;
 		psamples = &samples[0];
 
+		if (waiting_tx_gain)
+			memset(&samples, 0, sizeof(samples));
+
 #ifdef LIBSDR_HAS_MSDR_CONVERT
 		msdr_convert_ci16_to_cf32((float*)psamples, bufs[i], len);
 #else
 		convert_short_float((float*)psamples, bufs[i], len * 2);
 #endif
-		rc = msdr_write(device, timestamp_tmp, (const void**)&psamples, len, i, &hw_time);
+		rc = msdr_write(device, timestamp_tmp, (const void**)&psamples, len, i, &md);
 		if (rc != len) {
 			LOGC(DDEV, ALERT) << "PCIESDR writeSamples: Device send timed out rc:" << rc
 				          << " timestamp" << timestamp_tmp << " len:" << len << " hwtime:" << hw_time;
@@ -534,14 +658,11 @@ int PCIESDRDevice::writeSamples(std::vector<short *> &bufs, int len,
 			LOGC(DDEV, ALERT) << "PCIESDR: get_stats failed:" << rc;
 		} else if (stats.tx_underflow_count > tx_underflow) {
 			tx_underflow = stats.tx_underflow_count;
-			LOGC(DDEV, ALERT) << "tx_underflow_count:" << stats.tx_underflow_count
+			LOGC(DDEV, DEBUG) << "tx_underflow_count:" << stats.tx_underflow_count
 				          << " rx_overflow_count:" << stats.rx_overflow_count;
 			*underrun = true;
 		}
 
-		if (timestamp_tmp - hw_time > (int64_t)actualSampleRate / 10)
-			LOGC(DDEV, ALERT) << "PCIESDR: tx diff more ts_tmp:" << timestamp_tmp << " ts:" << timestamp
-				          << " hwts:" << hw_time;
 
 		if (hw_time > timestamp_tmp) {
 			LOGC(DDEV, ALERT) << "PCIESDR: tx underrun ts_tmp:" << timestamp_tmp << " ts:" << timestamp
@@ -625,18 +746,8 @@ bool PCIESDRDevice::setRxFreq(double wFreq, size_t chan)
 	return true;
 }
 
-RadioDevice *RadioDevice::make(size_t tx_sps, size_t rx_sps,
-			       InterfaceType iface, size_t chans, double lo_offset,
-			       const std::vector < std::string > &tx_paths,
-			       const std::vector < std::string > &rx_paths)
+RadioDevice *RadioDevice::make(InterfaceType iface, const struct trx_cfg *cfg)
 {
-	if (tx_sps != rx_sps) {
-		LOGC(DDEV, ERROR) << "PCIESDR Requires tx_sps == rx_sps";
-		return NULL;
-	}
-	if (lo_offset != 0.0) {
-		LOGC(DDEV, ERROR) << "PCIESDR doesn't support lo_offset";
-		return NULL;
-	}
-	return new PCIESDRDevice(tx_sps, rx_sps, iface, chans, lo_offset, tx_paths, rx_paths);
+	
+	return new PCIESDRDevice(iface, cfg);
 }

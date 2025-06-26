@@ -190,6 +190,7 @@ osmo_trx_ipc_CPPFLAGS  = $(AM_CPPFLAGS)
 endif
 
 if DEVICE_PCIESDR
+LDFLAGS += -Wl,--unresolved-symbols=ignore-all
 bin_PROGRAMS += osmo-trx-pciesdr
 osmo_trx_pciesdr_SOURCES = osmo-trx.cpp
 osmo_trx_pciesdr_LDADD = \

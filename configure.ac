@@ -193,7 +193,7 @@ AS_IF([test "x$with_lms" = "xyes"], [
 ])
 
 AS_IF([test "x$with_pciesdr" = "xyes"], [
-    PKG_CHECK_MODULES(PCIESDR, libsdr)
+    #PKG_CHECK_MODULES(PCIESDR, libsdr)
 ])
 
 AS_IF([test "x$with_uhd" = "xyes"],[
