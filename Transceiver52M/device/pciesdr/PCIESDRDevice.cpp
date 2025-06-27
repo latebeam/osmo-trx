@@ -54,7 +54,7 @@ using namespace std;
 /* Size of Rx / Tx timestamp based Ring buffer, in bytes */
 #define SAMPLE_BUF_SZ (1 << 20)
 
-#define WAIT_TX_GAIN_TIME 7
+#define WAIT_TX_GAIN_TIME_SEC 7
 std::chrono::steady_clock::time_point global_start_time;
 bool waiting_tx_gain = false;
 double saved_tx_gain_dB = 0.0;
