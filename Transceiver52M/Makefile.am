@@ -190,11 +190,13 @@ osmo_trx_ipc_CPPFLAGS  = $(AM_CPPFLAGS)
 endif
 
 if DEVICE_PCIESDR
-LDFLAGS += -Wl,--unresolved-symbols=ignore-all
+PCIESDR_DIR = $(PCIESDR_LIB)
+LDFLAGS += -Wl,--no-as-needed -lsdr -Wl,--as-needed
 bin_PROGRAMS += osmo-trx-pciesdr
 osmo_trx_pciesdr_SOURCES = osmo-trx.cpp
 osmo_trx_pciesdr_LDADD = \
         $(builddir)/device/pciesdr/libdevice.la \
         $(COMMON_LDADD)
 osmo_trx_pciesdr_CPPFLAGS  = $(AM_CPPFLAGS)
+osmo_trx_pciesdr_LDFLAGS = -L$(PCIESDR_DIR) -Wl,-rpath,$(PCIESDR_DIR)/libsdr.so
 endif

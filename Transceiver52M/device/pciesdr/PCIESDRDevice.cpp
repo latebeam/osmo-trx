@@ -156,14 +156,9 @@ int PCIESDRDevice::open()
 	//StartParams.sync_source = SDR_SYNC_NONE;
 	/* sync on internal PPS */
 	
-	StartParams.sync_all = 1;
 	StartParams.flags1 = 1;
-	StartParams.flags2 = 1;
-	StartParams.flags3 = 1;
 
 	StartParams.arm_cache_mode = SDR_ARM_CACHE_USER;
-
-	LOGC(DDEV, INFO) << "PCIESDR after sync all & flags1-3 & sync all & arm_cache_mode";
 
 	StartParams.sync_source = SDR_SYNC_INTERNAL;
 	LOGC(DDEV, INFO) << "PCIESDR after sync_source";
@@ -225,7 +220,7 @@ int PCIESDRDevice::open()
 	StartParams.rx_freq[0] = 1550e6;
 	StartParams.tx_freq[0] = 1500e6;
 	StartParams.rx_gain[0] = 60;
-	StartParams.tx_gain[0] = 0;
+	StartParams.tx_gain[0] = -50;
 	StartParams.rx_antenna[0] = SDR_RX_ANTENNA_RX;
 	StartParams.rf_port_count = 1;
 	StartParams.tx_port_channel_count[0] = 1;
